@@ -16,7 +16,6 @@
 
 open Lwt
 open Printf
-open OS
 
 type 'a io = 'a Lwt.t
 type page_aligned_buffer = Io_page.t
@@ -30,14 +29,21 @@ type error = [
   | `Disconnected      (** the device has been previously disconnected *)
 ]
 
+module Make(E: Evtchn.S.EVENTS
+  with type 'a io = 'a Lwt.t
+)(M: Memory.S.MEMORY) = struct
+
+module Ring = Shared_memory_ring.Rpc.Make(E)(M)
+
 let allocate_ring ~domid =
-  let page = Io_page.get 1 in
-  let x = Io_page.to_cstruct page in
-  lwt gnt = Gnt.Gntshr.get () in
+  M.share ~domid ~npages:1 ~rw:true
+  >>= fun share ->
+  let x = Io_page.to_cstruct (M.buf_of_share share) in
+  (* npages = 1 ==> List.length grants = 1 *)
+  let gnt = List.hd (M.grants_of_share share) in
   for i = 0 to Cstruct.len x - 1 do
     Cstruct.set_uint8 x i 0
   done;
-  Gnt.Gntshr.grant_access ~domid ~writable:true gnt page;
   return (gnt, x)
 
 module RX = struct
@@ -71,13 +77,12 @@ module RX = struct
 
   type response = int * int * int
 
-  let create (id, domid) =
+  let create (id, domid, channel) =
     let name = sprintf "Netif.RX.%d" id in
-    lwt rx_gnt, buf = allocate_ring ~domid in
-    let sring = Ring.Rpc.of_buf ~buf ~idx_size:Proto_64.total_size ~name in
-    let fring = Ring.Rpc.Front.init ~sring in
-    let client = Lwt_ring.Front.init string_of_int fring in
-    return (rx_gnt, fring, client)
+    allocate_ring ~domid
+    >>= fun (rx_gnt, buf) ->
+    let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
+    return (rx_gnt, ring)
 
 end
 
@@ -122,13 +127,12 @@ module TX = struct
     let _ = assert(total_size = 12)
   end
 
-  let create (id, domid) =
+  let create (id, domid, channel) =
     let name = sprintf "Netif.TX.%d" id in
-    lwt rx_gnt, buf = allocate_ring ~domid in
-    let sring = Ring.Rpc.of_buf ~buf ~idx_size:Proto_64.total_size ~name in
-    let fring = Ring.Rpc.Front.init ~sring in
-    let client = Lwt_ring.Front.init string_of_int fring in
-    return (rx_gnt, fring, client)
+    allocate_ring ~domid
+    >>= fun (rx_gnt, buf) ->
+    let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
+    return (rx_gnt, ring)
 end
 
 type features = {
@@ -151,15 +155,13 @@ type transport = {
   backend_id: int;
   backend: string;
   mac: Macaddr.t;
-  tx_fring: (TX.response,int) Ring.Rpc.Front.t;
-  tx_client: (TX.response,int) Lwt_ring.Front.t;
-  tx_gnt: Gnt.gntref;
+  tx_ring: (TX.response,int) Ring.Front.t;
+  tx_gnt: M.grant;
   tx_mutex: Lwt_mutex.t; (* Held to avoid signalling between fragments *)
-  rx_fring: (RX.response,int) Ring.Rpc.Front.t;
-  rx_client: (RX.response,int) Lwt_ring.Front.t;
-  rx_map: (int, Gnt.gntref * Io_page.t) Hashtbl.t;
-  rx_gnt: Gnt.gntref;
-  evtchn: Eventchn.t;
+  rx_ring: (RX.response,int) Ring.Front.t;
+  rx_map: (int, M.grant * Io_page.t) Hashtbl.t;
+  rx_gnt: M.grant;
+  evtchn: E.channel;
   features: features;
   stats : stats;
 }
@@ -179,8 +181,6 @@ let backend_id t = t.t.backend_id
 
 let devices : (id, t) Hashtbl.t = Hashtbl.create 1
 
-let h = Eventchn.init ()
-
 (* Given a VIF ID and backend domid, construct a netfront record for it *)
 let plug_inner id =
   lwt xsc = Xs.make () in
@@ -191,8 +191,10 @@ let plug_inner id =
     >|= int_of_string in
   Printf.printf "Netfront.create: id=%d domid=%d\n%!" id backend_id;
   (* Allocate a transmit and receive ring, and event channel for them *)
-  lwt (rx_gnt, rx_fring, rx_client) = RX.create (id, backend_id) in
-  lwt (tx_gnt, tx_fring, tx_client) = TX.create (id, backend_id) in
+  RX.create (id, backend_id)
+  >>= fun (rx_gnt, rx_ring) ->
+  TX.create (id, backend_id)
+  >>= fun (tx_gnt, tx_ring) ->
   let tx_mutex = Lwt_mutex.create () in
   let evtchn = Eventchn.bind_unbound_port h backend_id in
   let evtchn_port = Eventchn.to_int evtchn in
@@ -518,3 +520,5 @@ let reset_stats_counters t =
 let _ =
   printf "Netif: add resume hook\n%!";
   Sched.add_resume_hook resume
+
+end
