@@ -8,8 +8,9 @@ Plugins:     META (0.3), DevFiles (0.3)
 BuildTools:  ocamlbuild
 
 Library "mirage-net-xen"
+  Pack:               true
   CompiledObject:     best
   Path:               lib
   Findlibname:        mirage-net-xen
-  Modules:            Netif
-  BuildDepends:       lwt.syntax,cstruct, cstruct.syntax, ipaddr, xen-evtchn, xen-gnt, mirage-types.lwt, shared-memory-ring
+  Modules:            S, Xenstore
+  BuildDepends:       lwt.syntax,cstruct, cstruct.syntax, ipaddr, xen-evtchn, xen-gnt, mirage-types.lwt, shared-memory-ring, sexplib.syntax, xenstore_transport.lwt, xenstore

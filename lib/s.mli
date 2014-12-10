@@ -13,33 +13,31 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-
-type features = {
-  sg: bool;
-  gso_tcpv4: bool;
-  rx_copy: bool;
-  rx_flip: bool;
-  smart_poll: bool;
-} with sexp
-
-type backend = {
-  frontend_id: int;
-  features: features;
-}
-
-type frontend = {
-  backend_id: int;
-  tx_ring_ref: string;
-  rx_ring_ref: string;
-  event_channel: string;
-  mac: string;
-  frontend_features: features;
-} with sexp
+open Sexplib.Std
 
 module type CONFIGURATION = sig
 
-  val connect: int -> frontend -> features Lwt.t
-  (** [connect my_domid 
+
+type features = {
+  rx_copy: bool;
+  rx_flip: bool;
+  rx_notify: bool;
+  sg: bool;
+  gso_tcpv4: bool;
+  smart_poll: bool;
+} with sexp
+
+type backend_configuration = {
+  backend_id: int;
+  features_available: features;
+} with sexp
+
+type frontend_configuration = {
+  tx_ring_ref: int;
+  rx_ring_ref: int;
+  event_channel: int;
+  feature_requests: features;
+} with sexp
 
   val description: string
   (** Human-readable description suitable for help text or
