@@ -17,6 +17,7 @@ open Sexplib.Std
 
 module type CONFIGURATION = sig
 
+  type 'a io
 
 type features = {
   rx_copy: bool;
@@ -33,50 +34,19 @@ type backend_configuration = {
 } with sexp
 
 type frontend_configuration = {
-  tx_ring_ref: int;
-  rx_ring_ref: int;
-  event_channel: int;
+  tx_ring_ref: int32;
+  rx_ring_ref: int32;
+  event_channel: string;
   feature_requests: features;
 } with sexp
 
-  val description: string
-  (** Human-readable description suitable for help text or
-      a manpage *)
-end
+  val read_mac: int -> Macaddr.t io
 
-module type ENDPOINT = sig
-  type t with sexp_of
-  (** Type of a vchan endpoint. *)
+  val write_frontend_configuration: int -> frontend_configuration -> unit io
 
-  type port with sexp_of
-  (** Type of a vchan port name. *)
+  val connect: int -> unit io
 
-  type error = [
-    `Unknown of string
-  ]
-
-  val server :
-    domid:int ->
-    port:port ->
-    ?read_size:int ->
-    ?write_size:int ->
-    unit -> t Lwt.t
-
-  val client :
-    domid:int ->
-    port:port ->
-    unit -> t Lwt.t
-
-  val close : t -> unit Lwt.t
-  (** Close a vchan. This deallocates the vchan and attempts to free
-      its resources. The other side is notified of the close, but can
-      still read any data pending prior to the close. *)
-
-  include V1_LWT.FLOW
-    with type flow = t
-    and  type error := error
-    and  type 'a io = 'a Lwt.t
-    and  type buffer = Cstruct.t
+  val read_backend: int -> backend_configuration io
 
   val description: string
   (** Human-readable description suitable for help text or

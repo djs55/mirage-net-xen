@@ -31,7 +31,9 @@ type error = [
 
 module Make(E: Evtchn.S.EVENTS
   with type 'a io = 'a Lwt.t
-)(M: Memory.S.MEMORY) = struct
+)(M: Memory.S.MEMORY
+)(C: S.CONFIGURATION
+  with type 'a io = 'a Lwt.t) = struct
 
 module Ring = Shared_memory_ring.Rpc.Make(E)(M)
 
@@ -183,66 +185,46 @@ let devices : (id, t) Hashtbl.t = Hashtbl.create 1
 
 (* Given a VIF ID and backend domid, construct a netfront record for it *)
 let plug_inner id =
-  lwt xsc = Xs.make () in
-  lwt backend_id =
-    Xs.(immediate xsc 
-          (fun h -> 
-             read h (sprintf "device/vif/%d/backend-id" id)))
-    >|= int_of_string in
-  Printf.printf "Netfront.create: id=%d domid=%d\n%!" id backend_id;
-  (* Allocate a transmit and receive ring, and event channel for them *)
-  RX.create (id, backend_id)
-  >>= fun (rx_gnt, rx_ring) ->
-  TX.create (id, backend_id)
-  >>= fun (tx_gnt, tx_ring) ->
   let tx_mutex = Lwt_mutex.create () in
-  let evtchn = Eventchn.bind_unbound_port h backend_id in
-  let evtchn_port = Eventchn.to_int evtchn in
-  (* Read Xenstore info and set state to Connected *)
-  let node = sprintf "device/vif/%d/" id in
-  lwt backend = Xs.(immediate xsc (fun h -> read h (node ^ "backend"))) in
-  lwt mac =
-    Xs.(immediate xsc (fun h -> read h (node ^ "mac"))) 
-    >|= Macaddr.of_string
-    >>= function
-    | None -> Lwt.fail (Failure "invalid mac")
-    | Some m -> return m 
-  in
-  printf "MAC: %s\n%!" (Macaddr.to_string mac);
-  Xs.(transaction xsc (fun h ->
-      let wrfn k v = write h (node ^ k) v in
-      wrfn "tx-ring-ref" (string_of_int tx_gnt) >>
-      wrfn "rx-ring-ref" (string_of_int rx_gnt) >>
-      wrfn "event-channel" (string_of_int (evtchn_port)) >>
-      wrfn "request-rx-copy" "1" >>
-      wrfn "feature-rx-notify" "1" >>
-      wrfn "feature-sg" "1" >>
-      wrfn "state" Device_state.(to_string Connected)
-    )) >>
-  (* Read backend features *)
-  lwt features = Xs.(transaction xsc (fun h ->
-      let rdfn k =
-        try_lwt
-          read h (sprintf "%s/feature-%s" backend k) >>= 
-          function
-          |"1" -> return true
-          |_ -> return false
-        with exn -> return false in
-      lwt sg = rdfn "sg" in
-      lwt gso_tcpv4 = rdfn "gso-tcpv4" in
-      lwt rx_copy = rdfn "rx-copy" in
-      lwt rx_flip = rdfn "rx-flip" in
-      lwt smart_poll = rdfn "smart-poll" in
-      return { sg; gso_tcpv4; rx_copy; rx_flip; smart_poll }
-    )) in
+
+  C.read_backend id
+  >>= fun b ->
+  C.read_mac id
+  >>= fun mac ->
+  Printf.printf "Netfront.create: id=%d domid=%d mac=%s\n%!"
+    id b.C.backend_id (Macaddr.to_string mac);
+
+  (* Allocate a transmit and receive ring, and event channel for them *)
+  E.listen b.C.backend_id
+  >>= fun (port, channel) ->
+  RX.create (id, b.C.backend_id, channel)
+  >>= fun (rx_gnt, rx_ring) ->
+  TX.create (id, b.C.backend_id, channel)
+  >>= fun (tx_gnt, tx_ring) ->
+
+  let frontend = {
+    C.tx_ring_ref = M.int32_of_grant tx_gnt;
+    rx_ring_ref = M.int32_of_grant rx_gnt;
+    event_channel = E.string_of_port port;
+    feature_requests = {
+      rx_copy = true;
+      rx_notify = true;
+      sg = true;
+      (* FIXME: not sure about these *)
+      rx_flip = false;
+      gso_tcpv4 = false;
+      smart_poll = false;
+    }
+  } in
+  C.write_frontend_configuration id frontend
+  >>= fun () ->
+  C.connect id
+  >>= fun () ->
   let rx_map = Hashtbl.create 1 in
-  Printf.printf " sg:%b gso_tcpv4:%b rx_copy:%b rx_flip:%b smart_poll:%b\n"
-    features.sg features.gso_tcpv4 features.rx_copy features.rx_flip features.smart_poll;
-  Eventchn.unmask h evtchn;
   let stats = { rx_pkts=0l;rx_bytes=0L;tx_pkts=0l;tx_bytes=0L } in
   (* Register callback activation *)
-  return { id; backend_id; tx_fring; tx_client; tx_gnt; tx_mutex; 
-           rx_gnt; rx_fring; rx_client; rx_map; stats;
+  return { id; backend_id; tx_ring; tx_gnt; tx_mutex; 
+           rx_gnt; rx_ring; rx_map; stats;
            evtchn; mac; backend; features; 
          }
 

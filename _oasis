@@ -12,5 +12,5 @@ Library "mirage-net-xen"
   CompiledObject:     best
   Path:               lib
   Findlibname:        mirage-net-xen
-  Modules:            S, Xenstore
+  Modules:            S, Xenstore, Netif
   BuildDepends:       lwt.syntax,cstruct, cstruct.syntax, ipaddr, xen-evtchn, xen-gnt, mirage-types.lwt, shared-memory-ring, sexplib.syntax, xenstore_transport.lwt, xenstore

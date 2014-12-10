@@ -18,68 +18,106 @@ open Sexplib.Std
 
 module Make(Xs: Xs_client_lwt.S) = struct
 
-  type t = {
-    ring_ref: string;
-    event_channel: string;
-  } with sexp
+  type 'a io = 'a Lwt.t
 
-  let write ~client_domid ~port t =
-    Xs.make ()
-    >>= fun c ->
-    Xs.(immediate c (fun h -> read h "domid")) >>= fun server_domid ->
-    Xs.(immediate c (fun h -> getdomainpath h (int_of_string server_domid))) >>= fun domainpath ->
-    let xs_path = Printf.sprintf "%s/data/vchan/%d/%s" domainpath client_domid (Port.to_string port) in
-    let acl =
-      Xs_protocol.ACL.({owner = int_of_string server_domid; other = NONE; acl = [ client_domid, READ ]}) in
-    let info = [
-      xs_path ^ "/ring-ref", t.ring_ref;
-      xs_path ^ "/event-channel", t.event_channel;
-    ] in
-    Xs.(transaction c
-          (fun h ->
-             Lwt_list.iter_s (fun (k, v) ->
-               write h k v >>= fun () ->
-               setperms h k acl
-             ) info
-          )
-    )
+type features = {
+  rx_copy: bool;
+  rx_flip: bool;
+  rx_notify: bool;
+  sg: bool;
+  gso_tcpv4: bool;
+  smart_poll: bool;
+} with sexp
 
-  let read ~server_domid ~port =
-    Xs.make ()
-    >>= fun c ->
-    Xs.(immediate c (fun h -> read h "domid")) >>= fun client_domid ->
-    Xs.(immediate c (fun h -> getdomainpath h server_domid)) >>= fun domainpath ->
-    let xs_path = Printf.sprintf "%s/data/vchan/%s/%s" domainpath client_domid (Port.to_string port) in
-    Xs.(wait c
-      (fun xsh ->
-        try_lwt
-          read xsh (xs_path ^ "/ring-ref") >>= fun rref ->
-          read xsh (xs_path ^ "/event-channel") >>= fun evtchn ->
-          return (rref, evtchn)
-        with _ -> fail Xs_protocol.Eagain))
-    >>= fun (ring_ref, event_channel) ->
-    return { ring_ref; event_channel }
+type backend_configuration = {
+  backend_id: int;
+  features_available: features;
+} with sexp
 
-  let delete ~client_domid ~port =
+type frontend_configuration = {
+  tx_ring_ref: int32;
+  rx_ring_ref: int32;
+  event_channel: string;
+  feature_requests: features;
+} with sexp
+
+  let read_int x =
+    try
+      return (int_of_string x)
+    with _ ->
+      fail (Failure (Printf.sprintf "Expected an integer: %s" x))
+
+  let node id = Printf.sprintf "device/vif/%d/" id
+  let read_mac id =
     Xs.make ()
-    >>= fun c ->
-    Xs.(immediate c (fun h -> read h "domid")) >>= fun server_domid ->
-    Xs.(immediate c (fun h -> getdomainpath h (int_of_string server_domid))) >>= fun domainpath ->
-    let xs_path = Printf.sprintf "%s/data/vchan/%d/%s" domainpath client_domid (Port.to_string port) in
-    Xs.(transaction c
-        (fun h ->
-           rm h xs_path
-           >>= fun () ->
-           (* If there are no more connections to remote_domid, remove the whole directory *)
-           let dir = Filename.dirname xs_path in
-           directory h dir
-           >>= function
-           | [] -> rm h dir
-           | _ -> return ()
-        )
-    )
+    >>= fun xsc ->
+    Xs.(immediate xsc (fun h -> read h (node id ^ "mac")))
+    >|= Macaddr.of_string
+    >>= function
+    | Some x -> return x
+    | None ->
+      let m = Macaddr.make_local (fun _ -> Random.int 255) in
+      Printf.printf "Netfront %d: no configured MAC, using %s"
+        id (Macaddr.to_string m);
+      return m
+
+  let write_frontend_configuration id (f: frontend_configuration) =
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(transaction xsc (fun h ->
+      let wrfn k v = write h (node id ^ k) v in
+      let write_feature k v =
+        wrfn ("feature-" ^ k) (if v then "1" else "0") in
+      wrfn "tx-ring-ref" (Int32.to_string f.tx_ring_ref) >>= fun () ->
+      wrfn "rx-ring-ref" (Int32.to_string f.rx_ring_ref) >>= fun () ->
+      wrfn "event-channel" f.event_channel >>= fun () ->
+      write_feature "rx-copy" f.feature_requests.rx_copy >>= fun () ->
+      write_feature "rx-notify" f.feature_requests.rx_notify >>= fun () ->
+      write_feature "sg" f.feature_requests.sg >>= fun () ->
+      (* XXX: rx-flip, smart-poll, gso-tcpv4 *)
+      return ()
+    ))
+
+  let connect id =
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc (fun h ->
+      write h (node id ^ "state") "4"
+    ))
+
+  let read_backend id =
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc (fun h ->
+      read h (node id ^ "backend-id")
+      >>= fun backend_id ->
+      read_int backend_id
+      >>= fun backend_id ->
+      read h (node id ^ "backend")
+      >>= fun backend ->
+      let read_feature k =
+        Lwt.catch
+          (fun () ->
+            read h (Printf.sprintf "%s/feature-%s" backend k)
+            >>= fun v ->
+            return (v = "1"))
+          (fun _ -> return false) in
+       read_feature "sg"
+       >>= fun sg ->
+       read_feature "gso-tcpv4"
+       >>= fun gso_tcpv4 ->
+       read_feature "rx-copy"
+       >>= fun rx_copy ->
+       read_feature "rx-flip"
+       >>= fun rx_flip ->
+       read_feature "rx-notify"
+       >>= fun rx_notify ->
+       read_feature "smart-poll"
+       >>= fun smart_poll ->
+       let features_available = { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll } in
+       return { backend_id; features_available }
+   ))
 
   let description = "Configuration information will be shared via Xenstore keys"
 
 end
-
