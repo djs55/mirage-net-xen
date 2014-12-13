@@ -137,19 +137,11 @@ module TX = struct
     return (rx_gnt, ring)
 end
 
-type features = {
-  sg: bool;
-  gso_tcpv4: bool;
-  rx_copy: bool;
-  rx_flip: bool;
-  smart_poll: bool;
-}
-
 type stats = {
   mutable rx_bytes : int64;
   mutable rx_pkts : int32;
   mutable tx_bytes : int64;
-  mutable tx_pkts : int32; 
+  mutable tx_pkts : int32;
 }
 
 type transport = {
@@ -161,10 +153,16 @@ type transport = {
   tx_gnt: M.grant;
   tx_mutex: Lwt_mutex.t; (* Held to avoid signalling between fragments *)
   rx_ring: (RX.response,int) Ring.Front.t;
-  rx_map: (int, M.grant * Io_page.t) Hashtbl.t;
+  (* we share batches of pages with the backend and unshare
+     when the last id is replied to. An entry in this array with
+     index i means i is the last id using the share. *)
+  rx_shares: M.share option array;
+  mutable rx_next_id: int;
+  (* The granted page corresponding to each slot *)
+  rx_pages: Cstruct.t array;
   rx_gnt: M.grant;
-  evtchn: E.channel;
-  features: features;
+  channel: E.channel;
+  features: C.features;
   stats : stats;
 }
 
@@ -189,10 +187,12 @@ let plug_inner id =
 
   C.read_backend id
   >>= fun b ->
+  let backend_id = b.C.backend_id in
+  let backend = b.C.backend in
   C.read_mac id
   >>= fun mac ->
   Printf.printf "Netfront.create: id=%d domid=%d mac=%s\n%!"
-    id b.C.backend_id (Macaddr.to_string mac);
+    id backend_id (Macaddr.to_string mac);
 
   (* Allocate a transmit and receive ring, and event channel for them *)
   E.listen b.C.backend_id
@@ -202,30 +202,33 @@ let plug_inner id =
   TX.create (id, b.C.backend_id, channel)
   >>= fun (tx_gnt, tx_ring) ->
 
+  let features = {
+    C.rx_copy = true;
+    rx_notify = true;
+    sg = true;
+    (* FIXME: not sure about these *)
+    rx_flip = false;
+    gso_tcpv4 = false;
+    smart_poll = false;
+  } in
   let frontend = {
     C.tx_ring_ref = M.int32_of_grant tx_gnt;
     rx_ring_ref = M.int32_of_grant rx_gnt;
     event_channel = E.string_of_port port;
-    feature_requests = {
-      rx_copy = true;
-      rx_notify = true;
-      sg = true;
-      (* FIXME: not sure about these *)
-      rx_flip = false;
-      gso_tcpv4 = false;
-      smart_poll = false;
-    }
+    feature_requests = features;
   } in
   C.write_frontend_configuration id frontend
   >>= fun () ->
   C.connect id
   >>= fun () ->
-  let rx_map = Hashtbl.create 1 in
+  let rx_shares = Array.make (Ring.Front.nr_ents rx_ring) None in
+  let rx_next_id = 0 in
+  let rx_pages = Array.make (Ring.Front.nr_ents rx_ring) (Cstruct.create 0) in
   let stats = { rx_pkts=0l;rx_bytes=0L;tx_pkts=0l;tx_bytes=0L } in
   (* Register callback activation *)
-  return { id; backend_id; tx_ring; tx_gnt; tx_mutex; 
-           rx_gnt; rx_ring; rx_map; stats;
-           evtchn; mac; backend; features; 
+  return { id; backend_id; tx_ring; tx_gnt; tx_mutex;
+           rx_gnt; rx_ring; rx_shares; rx_pages; rx_next_id; stats;
+           channel; mac; backend; features;
          }
 
 (** Set of active block devices *)
@@ -233,86 +236,80 @@ let devices : (int, t) Hashtbl.t = Hashtbl.create 1
 
 let devices_waiters : (int, t Lwt.u Lwt_sequence.t) Hashtbl.t = Hashtbl.create 1
 
-(** Return a list of valid VIFs *)
-let enumerate () =
-  lwt xs = Xs.make () in
-  try_lwt
-    Xs.(immediate xs (fun h -> directory h "device/vif"))
-  with
-  | Xs_protocol.Enoent _ ->
-    return []
-  | e ->
-    printf "Netif.enumerate caught exception: %s\n" (Printexc.to_string e);
-    return []
-
-let notify nf () =
-  Eventchn.notify h nf.evtchn
-
 let refill_requests nf =
-  let num = Ring.Rpc.Front.get_free_requests nf.rx_fring in
+  let num = Ring.Front.get_free_requests nf.rx_ring in
   if num > 0 then
-    lwt grefs = Gnt.Gntshr.get_n num in
-    let pages = Io_page.pages num in
+    M.share ~domid:nf.backend_id ~npages:num ~rw:true
+    >>= fun share ->
+    let pages = Io_page.to_pages (M.buf_of_share share) in
+    let grants = M.grants_of_share share in
+    (* work out the id of the last page in the share, associate
+       the mapping with this. We will bulk-unmap when this slot
+       is acked. Note the whole set of buffers will remain allocated
+       until this happens so there's no danger of granting them to
+       two domains at once. *)
+    let last_id = ref 0 in
+    assert(grants <> []);
     List.iter
-      (fun (gref, page) ->
-         let id = gref mod (1 lsl 16) in
-         Gnt.Gntshr.grant_access ~domid:nf.backend_id ~writable:true gref page;
-         Hashtbl.add nf.rx_map id (gref, page);
-         let slot_id = Ring.Rpc.Front.next_req_id nf.rx_fring in
-         let slot = Ring.Rpc.Front.slot nf.rx_fring slot_id in
-         ignore(RX.Proto_64.write ~id ~gref:(Int32.of_int gref) slot)
-      ) (List.combine grefs pages);
-    if Ring.Rpc.Front.push_requests_and_check_notify nf.rx_fring
-    then notify nf ();
-    return ()
+      (fun (gref', page) ->
+         let slot_id = Ring.Front.next_req_id nf.rx_ring in
+         let slot = Ring.Front.slot nf.rx_ring slot_id in
+
+         let gref = M.int32_of_grant gref' in
+         last_id := nf.rx_next_id;
+         nf.rx_next_id <- (nf.rx_next_id + 1) mod (Array.length nf.rx_shares  );
+         nf.rx_pages.(!last_id) <- Io_page.to_cstruct page;
+         ignore(RX.Proto_64.write ~id:(!last_id) ~gref slot)
+      ) (List.combine grants pages);
+    assert(nf.rx_shares.(!last_id) = None);
+    nf.rx_shares.(!last_id) <- Some share;
+
+    if Ring.Front.push_requests_and_check_notify nf.rx_ring
+    then E.send nf.channel
+    else return ()
   else return ()
 
 let rx_poll nf (fn: Cstruct.t -> unit Lwt.t) =
-  Ring.Rpc.Front.ack_responses nf.rx_fring (fun slot ->
+  Ring.Front.ack_responses nf.rx_ring (fun slot ->
       let id,(offset,flags,status) = RX.Proto_64.read slot in
-      let gref, page = Hashtbl.find nf.rx_map id in
-      Hashtbl.remove nf.rx_map id;
-      Gnt.Gntshr.end_access gref;
-      Gnt.Gntshr.put gref;
+
+      (* unshare the data so the grant table indices can be reused *)
+      (match nf.rx_shares.(id) with
+      | Some share ->
+        nf.rx_shares.(id) <- None;
+        ignore_result (M.unshare share)
+      | None -> ());
+
       match status with
       |sz when status > 0 ->
-        let packet = Cstruct.sub (Io_page.to_cstruct page) 0 sz in
+        let page = nf.rx_pages.(id) in
+        let packet = Cstruct.sub page 0 sz in
         nf.stats.rx_pkts <- Int32.succ nf.stats.rx_pkts;
         nf.stats.rx_bytes <- Int64.add nf.stats.rx_bytes (Int64.of_int sz);
-        ignore_result 
+        ignore_result
           (try_lwt fn packet
            with exn -> return (printf "RX exn %s\n%!" (Printexc.to_string exn)))
       |err -> printf "RX error %d\n%!" err
     )
 
 let tx_poll nf =
-  Lwt_ring.Front.poll nf.tx_client TX.Proto_64.read
+  Ring.Front.poll nf.tx_ring TX.Proto_64.read
 
 let poll_thread (nf: t) : unit Lwt.t =
   let rec loop from =
-    lwt () = refill_requests nf.t in
+    refill_requests nf.t
+    >>= fun () ->
     rx_poll nf.t nf.receive_callback;
     tx_poll nf.t;
 
-    lwt from = Activations.after nf.t.evtchn from in
+    E.recv nf.t.channel from
+    >>= fun from ->
     loop from in
-  loop Activations.program_start
+  loop E.initial
 
 let connect id =
-  (* If [id] is an integer, use it. Otherwise default to the first
-     available disk. *)
-  lwt id' =
-    let id = try Some (int_of_string id) with _ -> None in
-    match id with 
-    | Some id -> 
-      return (Some id)
-    | None -> 
-      enumerate ()
-      >>= function
-      | [] -> return None 
-      | hd::_ -> return (Some (int_of_string hd))
-  in
-  match id' with
+  (* id must match the xenstore entry *)
+  match (try Some (int_of_string id) with _ -> None) with
   | Some id' -> begin
       if Hashtbl.mem devices id' then
         return (`Ok (Hashtbl.find devices id'))
@@ -333,11 +330,8 @@ let connect id =
       end
     end
   | None ->
-    lwt all = enumerate () in
     printf "Netif.connect %s: could not find device\n" id;
-    return (`Error (`Unknown
-                      (Printf.sprintf "device %s not found (available = [ %s ])"
-                         id (String.concat ", " all))))
+    return (`Error (`Unknown (Printf.sprintf "device %s not found" id)))
 
 (* Unplug shouldn't block, although the Xen one might need to due
    to Xenstore? XXX *)
@@ -385,7 +379,7 @@ let write_request ?size ~flags nf page =
          fail e in
   return replied
 
-(* Transmit a packet from buffer, with offset and length *)  
+(* Transmit a packet from buffer, with offset and length *)
 let rec write_already_locked nf page =
   try_lwt
     lwt th = write_request ~flags:0 nf page in
@@ -406,9 +400,9 @@ let writev nf pages =
   Lwt_mutex.with_lock nf.t.tx_mutex
     (fun () ->
        let rec wait_for_free_tx event n =
-         let numfree = Ring.Rpc.Front.get_free_requests nf.t.tx_fring in 
-         if n >= numfree then 
-           lwt event = Activations.after nf.t.evtchn event in
+         let numfree = Ring.Rpc.Front.get_free_requests nf.t.tx_fring in
+         if n >= numfree then
+           lwt event = Activations.after nf.t.channel event in
            wait_for_free_tx event n
          else
            return ()
@@ -445,7 +439,7 @@ let writev nf pages =
 let wait_for_plug nf =
   Printf.printf "Wait for plug...\n";
   Lwt_mutex.with_lock nf.l (fun () ->
-      while_lwt not (Eventchn.is_valid nf.t.evtchn) do
+      while_lwt not (Eventchn.is_valid nf.t.channel) do
         Lwt_condition.wait ~mutex:nf.l nf.c
       done)
 
@@ -461,9 +455,9 @@ let enumerate () =
   Xs.make ()
   >>= fun xsc ->
   catch
-    (fun () -> 
-       Xs.(immediate xsc 
-             (fun h -> directory h "device/vif")) 
+    (fun () ->
+       Xs.(immediate xsc
+             (fun h -> directory h "device/vif"))
        >|= (List.map int_of_string) )
     (fun _ -> return [])
 

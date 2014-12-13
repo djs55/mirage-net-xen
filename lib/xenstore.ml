@@ -31,6 +31,7 @@ type features = {
 
 type backend_configuration = {
   backend_id: int;
+  backend: string;
   features_available: features;
 } with sexp
 
@@ -86,14 +87,15 @@ type frontend_configuration = {
     ))
 
   let read_backend id =
+    let backend = node id in
     Xs.make ()
     >>= fun xsc ->
     Xs.(immediate xsc (fun h ->
-      read h (node id ^ "backend-id")
+      read h (backend ^ "backend-id")
       >>= fun backend_id ->
       read_int backend_id
       >>= fun backend_id ->
-      read h (node id ^ "backend")
+      read h (backend ^ "backend")
       >>= fun backend ->
       let read_feature k =
         Lwt.catch
@@ -115,7 +117,7 @@ type frontend_configuration = {
        read_feature "smart-poll"
        >>= fun smart_poll ->
        let features_available = { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll } in
-       return { backend_id; features_available }
+       return { backend; backend_id; features_available }
    ))
 
   let description = "Configuration information will be shared via Xenstore keys"

@@ -30,6 +30,7 @@ type features = {
 
 type backend_configuration = {
   backend_id: int;
+  backend: string;
   features_available: features;
 } with sexp
 
