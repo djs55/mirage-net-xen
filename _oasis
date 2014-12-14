@@ -12,7 +12,7 @@ Library "netchannel"
   CompiledObject:     best
   Path:               lib
   Findlibname:        mirage-net-xen
-  Modules:            S, Xenstore, Client
+  Modules:            S, Xenstore, Client, Server
   BuildDepends:       lwt.syntax,cstruct, cstruct.syntax, ipaddr, xen-evtchn, xen-gnt, mirage-types.lwt, shared-memory-ring, sexplib.syntax, xenstore_transport.lwt, xenstore
 
 Library "netchannel_unix"
