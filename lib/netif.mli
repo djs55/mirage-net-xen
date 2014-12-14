@@ -19,10 +19,15 @@
 module Make(
   E: Evtchn.S.EVENTS
     with type 'a io = 'a Lwt.t)(
-  M: Memory.S.MEMORY) :
-V1.NETWORK
-with type 'a io = 'a Lwt.t
-and type     page_aligned_buffer = Io_page.t
-and type     buffer = Cstruct.t
-and type     id = string
-and type     macaddr = Macaddr.t
+  M: Memory.S.MEMORY) : sig
+
+  include V1.NETWORK
+    with type 'a io = 'a Lwt.t
+     and type     page_aligned_buffer = Io_page.t
+     and type     buffer = Cstruct.t
+     and type     id = string
+     and type     macaddr = Macaddr.t
+
+  val resume: unit -> unit
+  (** Call this to trigger a reconnection, needed after a resume *)
+end

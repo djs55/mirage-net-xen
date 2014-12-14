@@ -38,9 +38,9 @@ module Make(E: Evtchn.S.EVENTS
 module Ring = Shared_memory_ring.Rpc.Make(E)(M)
 
 let allocate_ring ~domid =
-  M.share ~domid ~npages:1 ~rw:true
+  M.share ~domid ~npages:1 ~rw:true ~contents:`Zero ()
   >>= fun share ->
-  let x = Io_page.to_cstruct (M.buf_of_share share) in
+  let x = M.buf_of_share share in
   (* npages = 1 ==> List.length grants = 1 *)
   let gnt = List.hd (M.grants_of_share share) in
   for i = 0 to Cstruct.len x - 1 do
@@ -152,6 +152,7 @@ type transport = {
   tx_ring: (TX.response,int) Ring.Front.t;
   tx_gnt: M.grant;
   tx_mutex: Lwt_mutex.t; (* Held to avoid signalling between fragments *)
+  mutable tx_next_id: int;
   rx_ring: (RX.response,int) Ring.Front.t;
   (* we share batches of pages with the backend and unshare
      when the last id is replied to. An entry in this array with
@@ -222,11 +223,12 @@ let plug_inner id =
   C.connect id
   >>= fun () ->
   let rx_shares = Array.make (Ring.Front.nr_ents rx_ring) None in
+  let tx_next_id = 0 in
   let rx_next_id = 0 in
   let rx_pages = Array.make (Ring.Front.nr_ents rx_ring) (Cstruct.create 0) in
   let stats = { rx_pkts=0l;rx_bytes=0L;tx_pkts=0l;tx_bytes=0L } in
   (* Register callback activation *)
-  return { id; backend_id; tx_ring; tx_gnt; tx_mutex;
+  return { id; backend_id; tx_ring; tx_gnt; tx_mutex; tx_next_id;
            rx_gnt; rx_ring; rx_shares; rx_pages; rx_next_id; stats;
            channel; mac; backend; features;
          }
@@ -236,12 +238,18 @@ let devices : (int, t) Hashtbl.t = Hashtbl.create 1
 
 let devices_waiters : (int, t Lwt.u Lwt_sequence.t) Hashtbl.t = Hashtbl.create 1
 
+let rec to_pages remaining =
+  if Cstruct.len remaining <= 4096
+  then [ remaining ]
+  else Cstruct.sub remaining 0 4096 :: (to_pages (Cstruct.shift remaining 4096))
+
+
 let refill_requests nf =
   let num = Ring.Front.get_free_requests nf.rx_ring in
   if num > 0 then
-    M.share ~domid:nf.backend_id ~npages:num ~rw:true
+    M.share ~domid:nf.backend_id ~npages:num ~rw:true ~contents:`Zero ()
     >>= fun share ->
-    let pages = Io_page.to_pages (M.buf_of_share share) in
+    let pages = to_pages (M.buf_of_share share) in
     let grants = M.grants_of_share share in
     (* work out the id of the last page in the share, associate
        the mapping with this. We will bulk-unmap when this slot
@@ -258,7 +266,7 @@ let refill_requests nf =
          let gref = M.int32_of_grant gref' in
          last_id := nf.rx_next_id;
          nf.rx_next_id <- (nf.rx_next_id + 1) mod (Array.length nf.rx_shares  );
-         nf.rx_pages.(!last_id) <- Io_page.to_cstruct page;
+         nf.rx_pages.(!last_id) <- page;
          ignore(RX.Proto_64.write ~id:(!last_id) ~gref slot)
       ) (List.combine grants pages);
     assert(nf.rx_shares.(!last_id) = None);
@@ -351,43 +359,56 @@ let write_request ?size ~flags nf page =
       Printf.sprintf "Invalid page: offset=%d, length=%d" page.Cstruct.off len in
     print_endline msg;
     Lwt.fail (Failure msg)
-  end else
-  lwt gref = Gnt.Gntshr.get () in
-  (* This grants access to the *base* data pointer of the page *)
-  (* XXX: another place where we peek inside the cstruct *)
-  Gnt.Gntshr.grant_access ~domid:nf.t.backend_id ~writable:false gref page.Cstruct.buffer;
-  let size = match size with |None -> len |Some s -> s in
-  (* XXX: another place where we peek inside the cstruct *)
-  nf.t.stats.tx_pkts <- Int32.succ nf.t.stats.tx_pkts;
-  nf.t.stats.tx_bytes <- Int64.add nf.t.stats.tx_bytes (Int64.of_int size);
-  let offset = page.Cstruct.off in
-  lwt replied = Lwt_ring.Front.write nf.t.tx_client
-      (TX.Proto_64.write ~id:gref ~gref:(Int32.of_int gref) ~offset ~flags ~size) in
-  (* request has been written; when replied returns we have a reply *)
-  let replied =
-    try_lwt
-      lwt _ = replied in
-      Gnt.Gntshr.end_access gref;
-      Gnt.Gntshr.put gref;
-      return ()
-    with Lwt_ring.Shutdown ->
-      Gnt.Gntshr.put gref;
-      fail Lwt_ring.Shutdown
-       | e ->
-         Gnt.Gntshr.end_access gref;
-         Gnt.Gntshr.put gref;
-         fail e in
-  return replied
+  end else begin
+    M.share ~domid:nf.t.backend_id ~npages:1 ~rw:false ~contents:(`Buffer page) ()
+    >>= fun share ->
+    let grants = M.grants_of_share share in
+    (* we've already checked that page is a single page, therefore 1 grant *)
+    let gref = List.hd grants in
+    let size = match size with |None -> len |Some s -> s in
+    (* XXX: another place where we peek inside the cstruct *)
+    nf.t.stats.tx_pkts <- Int32.succ nf.t.stats.tx_pkts;
+    nf.t.stats.tx_bytes <- Int64.add nf.t.stats.tx_bytes (Int64.of_int size);
+    let offset = page.Cstruct.off in
+    let id = nf.t.tx_next_id in
+    nf.t.tx_next_id <- (nf.t.tx_next_id + 1) mod (1 lsl 16);
+    let gref = M.int32_of_grant gref in
+    Ring.Front.write nf.t.tx_ring (TX.Proto_64.write ~id ~gref ~offset ~flags ~size)
+    >>= fun replied_t ->
+    (* return a thread waiting for the reply which unshares the page *)
+    return
+      (Lwt.catch
+        (fun () ->
+          replied_t
+          >>= fun _ ->
+          M.unshare share
+        ) (function
+          | Shared_memory_ring.Rpc.Shutdown ->
+            M.unshare share
+            >>= fun () ->
+            fail Shared_memory_ring.Rpc.Shutdown
+          | e ->
+            M.unshare share
+            >>= fun () ->
+            fail e
+        )
+      )
+  end
 
 (* Transmit a packet from buffer, with offset and length *)
 let rec write_already_locked nf page =
-  try_lwt
-    lwt th = write_request ~flags:0 nf page in
-    Lwt_ring.Front.push nf.t.tx_client (notify nf.t);
-    lwt () = th in
-    (* all fragments acknowledged, resources cleaned up *)
-    return ()
-  with | Lwt_ring.Shutdown -> write_already_locked nf page
+  Lwt.catch
+    (fun () ->
+      write_request ~flags:0 nf page
+      >>= fun th ->
+      Ring.Front.push nf.t.tx_ring
+      >>= fun () ->
+      th
+      (* all fragments acknowledged, resources cleaned up *)
+    ) (function
+      | Shared_memory_ring.Rpc.Shutdown ->
+        write_already_locked nf page
+      | e -> fail e)
 
 let write nf page =
   Lwt_mutex.with_lock nf.t.tx_mutex
@@ -400,15 +421,17 @@ let writev nf pages =
   Lwt_mutex.with_lock nf.t.tx_mutex
     (fun () ->
        let rec wait_for_free_tx event n =
-         let numfree = Ring.Rpc.Front.get_free_requests nf.t.tx_fring in
+         let numfree = Ring.Front.get_free_requests nf.t.tx_ring in
          if n >= numfree then
-           lwt event = Activations.after nf.t.channel event in
+           E.recv nf.t.channel event
+           >>= fun event ->
            wait_for_free_tx event n
          else
            return ()
        in
        let numneeded = List.length pages in
-       wait_for_free_tx Activations.program_start numneeded >>
+       wait_for_free_tx E.initial numneeded
+       >>= fun () ->
        match pages with
        |[] -> return ()
        |[page] ->
@@ -419,29 +442,25 @@ let writev nf pages =
           * length, which is the backend will use to consume the remaining
           * fragments until the full length is satisfied *)
          let size = Cstruct.lenv pages in
-         lwt first_th =
-           write_request ~flags:TX.Proto_64.flag_more_data ~size nf first_page in
+         write_request ~flags:TX.Proto_64.flag_more_data ~size nf first_page
+         >>= fun first_th ->
          let rec xmit = function
            | [] -> return []
            | hd :: [] ->
-             lwt th = write_request ~flags:0 nf hd in
+             write_request ~flags:0 nf hd
+             >>= fun th ->
              return [ th ]
            | hd :: tl ->
-             lwt next_th = write_request ~flags:TX.Proto_64.flag_more_data nf hd in
-             lwt rest = xmit tl in
+             write_request ~flags:TX.Proto_64.flag_more_data nf hd
+             >>= fun next_th ->
+             xmit tl
+             >>= fun rest ->
              return (next_th :: rest) in
-         lwt rest_th = xmit other_pages in
+         xmit other_pages
+         >>= fun rest_th ->
          (* All fragments are now written, we can now notify the backend *)
-         Lwt_ring.Front.push nf.t.tx_client (notify nf.t);
-         return ()
+         Ring.Front.push nf.t.tx_ring
     )
-
-let wait_for_plug nf =
-  Printf.printf "Wait for plug...\n";
-  Lwt_mutex.with_lock nf.l (fun () ->
-      while_lwt not (Eventchn.is_valid nf.t.channel) do
-        Lwt_condition.wait ~mutex:nf.l nf.c
-      done)
 
 let listen nf fn =
   (* packets received from this point on will go to [fn]. Historical
@@ -450,34 +469,23 @@ let listen nf fn =
   let t, _ = Lwt.task () in
   t (* never return *)
 
-(** Return a list of valid VIFs *)
-let enumerate () =
-  Xs.make ()
-  >>= fun xsc ->
-  catch
-    (fun () ->
-       Xs.(immediate xsc
-             (fun h -> directory h "device/vif"))
-       >|= (List.map int_of_string) )
-    (fun _ -> return [])
-
 let resume (id,t) =
-  lwt transport = plug_inner id in
+  plug_inner id
+  >>= fun transport ->
   let old_transport = t.t in
   t.t <- transport;
-  lwt () = Lwt_list.iter_s (fun fn -> fn t) t.resume_fns in
-  lwt () = Lwt_mutex.with_lock t.l
-      (fun () -> Lwt_condition.broadcast t.c (); return ()) in
-  Lwt_ring.Front.shutdown old_transport.rx_client;
-  Lwt_ring.Front.shutdown old_transport.tx_client;
+  Lwt_list.iter_s (fun fn -> fn t) t.resume_fns
+  >>= fun () ->
+  Lwt_mutex.with_lock t.l
+      (fun () -> Lwt_condition.broadcast t.c (); return ())
+  >>= fun () ->
+  Ring.Front.shutdown old_transport.rx_ring;
+  Ring.Front.shutdown old_transport.tx_ring;
   return ()
 
 let resume () =
   let devs = Hashtbl.fold (fun k v acc -> (k,v)::acc) devices [] in
   Lwt_list.iter_p (fun (k,v) -> resume (k,v)) devs
-
-let add_resume_hook t fn =
-  t.resume_fns <- fn::t.resume_fns
 
 (* Type of callback functions for [create]. *)
 type callback = id -> t -> unit Lwt.t
@@ -492,9 +500,5 @@ let reset_stats_counters t =
   t.t.stats.rx_pkts  <- 0l;
   t.t.stats.tx_bytes <- 0L;
   t.t.stats.tx_pkts  <- 0l
-
-let _ =
-  printf "Netif: add resume hook\n%!";
-  Sched.add_resume_hook resume
 
 end
