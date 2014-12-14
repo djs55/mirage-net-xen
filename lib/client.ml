@@ -1,5 +1,6 @@
 (*
  * Copyright (c) 2010-2013 Anil Madhavapeddy <anil@recoil.org>
+ * Copyright (c) 2014 Citrix Inc
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -17,18 +18,6 @@
 open Lwt
 open Printf
 
-type 'a io = 'a Lwt.t
-type page_aligned_buffer = Io_page.t
-type buffer = Cstruct.t
-type macaddr = Macaddr.t
-
-(** IO operation errors *)
-type error = [
-  | `Unknown of string (** an undiagnosed error *)
-  | `Unimplemented     (** operation not yet implemented in the code *)
-  | `Disconnected      (** the device has been previously disconnected *)
-]
-
 module Make(E: Evtchn.S.EVENTS
   with type 'a io = 'a Lwt.t
 )(M: Memory.S.MEMORY
@@ -36,6 +25,18 @@ module Make(E: Evtchn.S.EVENTS
   with type 'a io = 'a Lwt.t) = struct
 
 module Ring = Shared_memory_ring.Rpc.Make(E)(M)
+
+type 'a io = 'a Lwt.t
+type page_aligned_buffer = Cstruct.t
+type buffer = Cstruct.t
+type macaddr = Macaddr.t
+
+(** IO operation errors *)
+type error = [
+| `Unknown of string (** an undiagnosed error *)
+| `Unimplemented     (** operation not yet implemented in the code *)
+| `Disconnected      (** the device has been previously disconnected *)
+]
 
 let allocate_ring ~domid =
   M.share ~domid ~npages:1 ~rw:true ~contents:`Zero ()
@@ -348,7 +349,7 @@ let disconnect t =
   Hashtbl.remove devices t.t.id;
   return ()
 
-let page_size = Io_page.round_to_page_size 1
+let page_size = 4096
 
 (* Push a single page to the ring, but no event notification *)
 let write_request ?size ~flags nf page =

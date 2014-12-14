@@ -1,5 +1,6 @@
 (*
  * Copyright (c) 2011-2013 Anil Madhavapeddy <anil@recoil.org>
+ * Copyright (c) 2014 Citrix Inc
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,18 +17,20 @@
 
 (** Xen Netfront interface for Ethernet I/O. *)
 
-module Make(
-  E: Evtchn.S.EVENTS
-    with type 'a io = 'a Lwt.t)(
-  M: Memory.S.MEMORY) : sig
+module Make
+  (E: Evtchn.S.EVENTS
+    with type 'a io = 'a Lwt.t)
+  (M: Memory.S.MEMORY)
+  (C: S.CONFIGURATION
+    with type 'a io = 'a Lwt.t) : sig
 
   include V1.NETWORK
     with type 'a io = 'a Lwt.t
-     and type     page_aligned_buffer = Io_page.t
+     and type     page_aligned_buffer = Cstruct.t
      and type     buffer = Cstruct.t
      and type     id = string
      and type     macaddr = Macaddr.t
 
-  val resume: unit -> unit
+  val resume: unit -> unit Lwt.t
   (** Call this to trigger a reconnection, needed after a resume *)
 end
