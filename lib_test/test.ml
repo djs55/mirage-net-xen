@@ -13,6 +13,14 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-open Netchannel
 
-include S.CONFIGURATION
+module NF =
+        Netchannel.Client.Make(Inheap_events)(Inheap_memory)(Netchannel_inheap_configuration)
+
+open OUnit
+
+let _ =
+
+  let suite = "netchannel" >::: [
+  ] in
+  OUnit2.run_test_tt_main (OUnit.ounit2_of_ounit1 suite)

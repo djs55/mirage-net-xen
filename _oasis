@@ -30,3 +30,15 @@ Library "netchannel_inheap"
   Findlibparent:      netchannel
   Modules:            Netchannel_inheap_configuration
   BuildDepends:       lwt, mirage-net-xen
+
+Executable test
+  Install:            false
+  CompiledObject:     best
+  Path:               lib_test
+  MainIs:             test.ml
+  BuildDepends:       cmdliner, lwt, lwt.unix, xen-evtchn.inheap, xen-gnt.inheap, mirage-net-xen, mirage-net-xen.inheap, oUnit
+
+Test core_test
+  Run$:               flag(tests)
+  Command:            $test
+  WorkingDirectory:   lib_test
