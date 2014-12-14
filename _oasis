@@ -7,7 +7,7 @@ License:     ISC
 Plugins:     META (0.3), DevFiles (0.3)
 BuildTools:  ocamlbuild
 
-Library "mirage-net-xen"
+Library "netchannel"
   Pack:               true
   CompiledObject:     best
   Path:               lib
