@@ -16,3 +16,4 @@
 open Netchannel
 
 include S.CONFIGURATION
+  with type 'a io = 'a Lwt.t

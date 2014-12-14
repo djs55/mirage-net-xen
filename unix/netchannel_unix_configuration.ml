@@ -1,5 +1,5 @@
 (*
- * Copyright (C) Citrix Systems Inc.
+ * Copyright (c) 2013,2014 Citrix Systems Inc
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -13,30 +13,50 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-open Netchannel
-
 open Sexplib.Std
 open Lwt
 
-type t = {
-  ring_ref: string;
-  event_channel: string;
+type 'a io = 'a Lwt.t
+
+type features = {
+  rx_copy: bool;
+  rx_flip: bool;
+  rx_notify: bool;
+  sg: bool;
+  gso_tcpv4: bool;
+  smart_poll: bool;
 } with sexp
 
-let _env_var = "XEN_CONFIGURATION"
+type backend_configuration = {
+  backend_id: int;
+  backend: string;
+  features_available: features;
+} with sexp
 
-let write ~client_domid ~port t =
-  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (sexp_of_t t))) _env_var;
+type frontend_configuration = {
+  tx_ring_ref: int32;
+  rx_ring_ref: int32;
+  event_channel: string;
+  feature_requests: features;
+} with sexp
+
+let _env_var = "NETCHANNEL_CONFIGURATION"
+
+let read_mac _ = return (Macaddr.make_local (fun _ -> Random.int 255))
+
+let write_frontend_configuration id t =
+  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (sexp_of_frontend_configuration t))) _env_var;
   return ()
 
-let read ~server_domid ~port =
+let connect id =
+  Printf.fprintf stderr "Connected\n%!";
+  return ()
+
+let read_backend id =
   try
-    return (t_of_sexp (Sexplib.Sexp.of_string (Sys.getenv _env_var)))
+    return (backend_configuration_of_sexp (Sexplib.Sexp.of_string (Sys.getenv _env_var)))
   with Not_found ->
     Printf.fprintf stderr "Failed to find %s in the process environment\n%!" _env_var;
     fail Not_found
 
-let delete ~client_domid ~port =
-  return ()
-
-let description = "Configuration information will be shared via Unix environment variables."
+    let description = "Configuration information will be shared via Unix environment variables."

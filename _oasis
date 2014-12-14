@@ -21,7 +21,7 @@ Library "netchannel_unix"
   Findlibname:        unix
   Findlibparent:      netchannel
   Modules:            Netchannel_unix_configuration
-  BuildDepends:       lwt, lwt.unix, mirage-net-xen
+  BuildDepends:       sexplib.syntax, lwt, lwt.unix, mirage-net-xen
 
 Library "netchannel_inheap"
   CompiledObject:     best

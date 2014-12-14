@@ -13,12 +13,10 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-open Lwt
 open Sexplib.Std
+open Lwt
 
-module Make(Xs: Xs_client_lwt.S) = struct
-
-  type 'a io = 'a Lwt.t
+type 'a io = 'a Lwt.t
 
 type features = {
   rx_copy: bool;
@@ -42,84 +40,27 @@ type frontend_configuration = {
   feature_requests: features;
 } with sexp
 
-  let read_int x =
-    try
-      return (int_of_string x)
-    with _ ->
-      fail (Failure (Printf.sprintf "Expected an integer: %s" x))
+let read_mac _ = return (Macaddr.make_local (fun _ -> Random.int 255))
 
-  let node id = Printf.sprintf "device/vif/%d/" id
-  let read_mac id =
-    Xs.make ()
-    >>= fun xsc ->
-    Xs.(immediate xsc (fun h -> read h (node id ^ "mac")))
-    >|= Macaddr.of_string
-    >>= function
-    | Some x -> return x
-    | None ->
-      let m = Macaddr.make_local (fun _ -> Random.int 255) in
-      Printf.printf "Netfront %d: no configured MAC, using %s"
-        id (Macaddr.to_string m);
-      return m
+let fc = ref None
+let fc_c = Lwt_condition.create ()
 
-  let write_frontend_configuration id (f: frontend_configuration) =
-    Xs.make ()
-    >>= fun xsc ->
-    Xs.(transaction xsc (fun h ->
-      let wrfn k v = write h (node id ^ k) v in
-      let write_feature k v =
-        wrfn ("feature-" ^ k) (if v then "1" else "0") in
-      wrfn "tx-ring-ref" (Int32.to_string f.tx_ring_ref) >>= fun () ->
-      wrfn "rx-ring-ref" (Int32.to_string f.rx_ring_ref) >>= fun () ->
-      wrfn "event-channel" f.event_channel >>= fun () ->
-      write_feature "rx-copy" f.feature_requests.rx_copy >>= fun () ->
-      write_feature "rx-notify" f.feature_requests.rx_notify >>= fun () ->
-      write_feature "sg" f.feature_requests.sg >>= fun () ->
-      (* XXX: rx-flip, smart-poll, gso-tcpv4 *)
-      return ()
-    ))
+let bc = ref None
+let bc_c = Lwt_condition.create ()
 
-  let connect id =
-    Xs.make ()
-    >>= fun xsc ->
-    Xs.(immediate xsc (fun h ->
-      write h (node id ^ "state") "4"
-    ))
+let write_frontend_configuration id t =
+  fc := Some t;
+  Lwt_condition.signal fc_c ();
+  return ()
 
-  let read_backend id =
-    let backend = node id in
-    Xs.make ()
-    >>= fun xsc ->
-    Xs.(immediate xsc (fun h ->
-      read h (backend ^ "backend-id")
-      >>= fun backend_id ->
-      read_int backend_id
-      >>= fun backend_id ->
-      read h (backend ^ "backend")
-      >>= fun backend ->
-      let read_feature k =
-        Lwt.catch
-          (fun () ->
-            read h (Printf.sprintf "%s/feature-%s" backend k)
-            >>= fun v ->
-            return (v = "1"))
-          (fun _ -> return false) in
-       read_feature "sg"
-       >>= fun sg ->
-       read_feature "gso-tcpv4"
-       >>= fun gso_tcpv4 ->
-       read_feature "rx-copy"
-       >>= fun rx_copy ->
-       read_feature "rx-flip"
-       >>= fun rx_flip ->
-       read_feature "rx-notify"
-       >>= fun rx_notify ->
-       read_feature "smart-poll"
-       >>= fun smart_poll ->
-       let features_available = { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll } in
-       return { backend; backend_id; features_available }
-   ))
+let connect id =
+  Printf.fprintf stderr "Connected\n%!";
+  return ()
 
-  let description = "Configuration information will be shared via Xenstore keys"
+let read_backend id =
+  let rec loop () = match !bc with
+  | None -> Lwt_condition.wait bc_c >>= fun () -> loop ()
+  | Some bc -> return bc in
+  loop ()
 
-end
+let description = "Configuration information will be shared via global bindings"
