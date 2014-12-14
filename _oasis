@@ -14,3 +14,11 @@ Library "netchannel"
   Findlibname:        mirage-net-xen
   Modules:            S, Xenstore, Client
   BuildDepends:       lwt.syntax,cstruct, cstruct.syntax, ipaddr, xen-evtchn, xen-gnt, mirage-types.lwt, shared-memory-ring, sexplib.syntax, xenstore_transport.lwt, xenstore
+
+Library "netchannel_unix"
+  CompiledObject:     best
+  Path:               unix
+  Findlibname:        unix
+  Findlibparent:      netchannel
+  Modules:            Netchannel_unix_configuration
+  BuildDepends:       lwt, lwt.unix, mirage-net-xen
