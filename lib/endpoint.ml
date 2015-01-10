@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2010-2013 Anil Madhavapeddy <anil@recoil.org>
- * Copyright (c) 2014 Citrix Inc
+ * Copyright (c) 2014-2015 Citrix Inc
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -14,7 +14,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-
+open Sexplib.Std
 open Lwt
 open Printf
 
@@ -80,8 +80,7 @@ module RX = struct
 
   type response = int * int * int
 
-  let create (id, domid, channel) =
-    let name = sprintf "Netif.RX.%d" id in
+  let create (name, domid, channel) =
     allocate_ring ~domid
     >>= fun (rx_gnt, buf) ->
     let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
@@ -130,13 +129,17 @@ module TX = struct
     let _ = assert(total_size = 12)
   end
 
-  let create (id, domid, channel) =
-    let name = sprintf "Netif.TX.%d" id in
+  let create (name, domid, channel) =
     allocate_ring ~domid
     >>= fun (rx_gnt, buf) ->
     let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
     return (rx_gnt, ring)
 end
+
+type id = [
+| `Client of int (* device id *)
+| `Server of int * int (* domid * device id *)
+]
 
 type stats = {
   mutable rx_bytes : int64;
@@ -146,7 +149,7 @@ type stats = {
 }
 
 type transport = {
-  id: int;
+  id: id;
   backend_id: int;
   backend: string;
   mac: Macaddr.t;
@@ -176,16 +179,20 @@ type t = {
   c : unit Lwt_condition.t;
 }
 
-type id = string
+type t' = string with sexp_of
+let sexp_of_t _ = sexp_of_t' "Netchannel.Endpoint.t"
 
-let id t = string_of_int t.t.id
+
+let id t = t.t.id
 let backend_id t = t.t.backend_id
 
 let devices : (id, t) Hashtbl.t = Hashtbl.create 1
 
-(* Given a VIF ID and backend domid, construct a netfront record for it *)
+(* Given a VIF ID and backend domid, construct a record for it *)
 let plug_inner id =
   let tx_mutex = Lwt_mutex.create () in
+
+  let id' = Sexplib.Sexp.to_string (S.sexp_of_id id) in
 
   C.read_backend id
   >>= fun b ->
@@ -193,15 +200,15 @@ let plug_inner id =
   let backend = b.C.backend in
   C.read_mac id
   >>= fun mac ->
-  Printf.printf "Netfront.create: id=%d domid=%d mac=%s\n%!"
-    id backend_id (Macaddr.to_string mac);
+  Printf.printf "Netfront.create: id=%s domid=%d mac=%s\n%!"
+    id' backend_id (Macaddr.to_string mac);
 
   (* Allocate a transmit and receive ring, and event channel for them *)
   E.listen b.C.backend_id
   >>= fun (port, channel) ->
-  RX.create (id, b.C.backend_id, channel)
+  RX.create (sprintf "Netif.RX.%s" id', b.C.backend_id, channel)
   >>= fun (rx_gnt, rx_ring) ->
-  TX.create (id, b.C.backend_id, channel)
+  TX.create (sprintf "Netif.TX.%s" id', b.C.backend_id, channel)
   >>= fun (tx_gnt, tx_ring) ->
 
   let features = {
@@ -235,9 +242,9 @@ let plug_inner id =
          }
 
 (** Set of active block devices *)
-let devices : (int, t) Hashtbl.t = Hashtbl.create 1
+let devices : (id, t) Hashtbl.t = Hashtbl.create 1
 
-let devices_waiters : (int, t Lwt.u Lwt_sequence.t) Hashtbl.t = Hashtbl.create 1
+let devices_waiters : (id, t Lwt.u Lwt_sequence.t) Hashtbl.t = Hashtbl.create 1
 
 let rec to_pages remaining =
   if Cstruct.len remaining <= 4096
@@ -317,30 +324,24 @@ let poll_thread (nf: t) : unit Lwt.t =
   loop E.initial
 
 let connect id =
-  (* id must match the xenstore entry *)
-  match (try Some (int_of_string id) with _ -> None) with
-  | Some id' -> begin
-      if Hashtbl.mem devices id' then
-        return (`Ok (Hashtbl.find devices id'))
-      else begin
-        printf "Netif.connect %d\n%!" id';
-        try_lwt
-          lwt t = plug_inner id' in
-          let l = Lwt_mutex.create () in
-          let c = Lwt_condition.create () in
-          (* packets are dropped until listen is called *)
-          let receive_callback = fun _ -> return () in
-          let dev = { t; resume_fns=[]; receive_callback; l; c } in
-          let (_: unit Lwt.t) = poll_thread dev in
-          Hashtbl.add devices id' dev;
-          return (`Ok dev)
-        with exn ->
-          return (`Error (`Unknown (Printexc.to_string exn)))
-      end
-    end
-  | None ->
-    printf "Netif.connect %s: could not find device\n" id;
-    return (`Error (`Unknown (Printf.sprintf "device %s not found" id)))
+  if Hashtbl.mem devices id then
+    return (`Ok (Hashtbl.find devices id))
+  else begin
+    let id' = Sexplib.Sexp.to_string (S.sexp_of_id id) in
+    printf "Netif.connect %s\n%!" id';
+    try_lwt
+      lwt t = plug_inner id in
+      let l = Lwt_mutex.create () in
+      let c = Lwt_condition.create () in
+      (* packets are dropped until listen is called *)
+      let receive_callback = fun _ -> return () in
+      let dev = { t; resume_fns=[]; receive_callback; l; c } in
+      let (_: unit Lwt.t) = poll_thread dev in
+      Hashtbl.add devices id dev;
+      return (`Ok dev)
+    with exn ->
+      return (`Error (`Unknown (Printexc.to_string exn)))
+  end
 
 (* Unplug shouldn't block, although the Xen one might need to due
    to Xenstore? XXX *)
@@ -469,6 +470,8 @@ let listen nf fn =
   nf.receive_callback <- fn;
   let t, _ = Lwt.task () in
   t (* never return *)
+
+let server ~domid ~devid = fail (Failure "not implemented")
 
 let resume (id,t) =
   plug_inner id

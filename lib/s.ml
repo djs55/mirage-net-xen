@@ -15,6 +15,11 @@
  *)
 open Sexplib.Std
 
+type id = [
+| `Client of int (* device id *)
+| `Server of int * int (* domid * device id *)
+] with sexp
+
 module type CONFIGURATION = sig
 
   type 'a io
@@ -41,15 +46,34 @@ type frontend_configuration = {
   feature_requests: features;
 } with sexp
 
-  val read_mac: int -> Macaddr.t io
+  val read_mac: id -> Macaddr.t io
 
-  val write_frontend_configuration: int -> frontend_configuration -> unit io
+  val write_frontend_configuration: id -> frontend_configuration -> unit io
 
-  val connect: int -> unit io
+  val connect: id -> unit io
 
-  val read_backend: int -> backend_configuration io
+  val read_backend: id -> backend_configuration io
 
   val description: string
   (** Human-readable description suitable for help text or
       a manpage *)
+end
+
+module type ENDPOINT = sig
+  include V1.NETWORK
+    with type 'a io = 'a Lwt.t
+     and type     page_aligned_buffer = Cstruct.t
+     and type     buffer = Cstruct.t
+     and type     id = id
+     and type     macaddr = Macaddr.t
+
+  val sexp_of_t: t -> Sexplib.Sexp.t
+
+  (** An ENDPOINT allows network connections to be created, and packets
+      to be exchanged in both directions.
+      Note that the Xen network protocols distinguish between two roles:
+      client (aka "netfront") and server (aka "netback"). *)
+
+  val resume: unit -> unit Lwt.t
+  (** Call this to trigger a reconnection, needed after a resume *)
 end

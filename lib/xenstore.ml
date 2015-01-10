@@ -48,7 +48,10 @@ type frontend_configuration = {
     with _ ->
       fail (Failure (Printf.sprintf "Expected an integer: %s" x))
 
-  let node id = Printf.sprintf "device/vif/%d/" id
+  let node = function
+    | `Client devid -> Printf.sprintf "device/vif/%d/" devid
+    | `Server (domid, devid) -> Printf.sprintf "backend/vif/%d/%d" domid devid
+
   let read_mac id =
     Xs.make ()
     >>= fun xsc ->
@@ -58,8 +61,8 @@ type frontend_configuration = {
     | Some x -> return x
     | None ->
       let m = Macaddr.make_local (fun _ -> Random.int 255) in
-      Printf.printf "Netfront %d: no configured MAC, using %s"
-        id (Macaddr.to_string m);
+      Printf.printf "Netfront %s: no configured MAC, using %s"
+        (Sexplib.Sexp.to_string (S.sexp_of_id id)) (Macaddr.to_string m);
       return m
 
   let write_frontend_configuration id (f: frontend_configuration) =
