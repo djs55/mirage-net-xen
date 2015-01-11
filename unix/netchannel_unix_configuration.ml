@@ -13,39 +13,18 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
+open Netchannel 
 open Sexplib.Std
 open Lwt
 
 type 'a io = 'a Lwt.t
-
-type features = {
-  rx_copy: bool;
-  rx_flip: bool;
-  rx_notify: bool;
-  sg: bool;
-  gso_tcpv4: bool;
-  smart_poll: bool;
-} with sexp
-
-type backend_configuration = {
-  backend_id: int;
-  backend: string;
-  features_available: features;
-} with sexp
-
-type frontend_configuration = {
-  tx_ring_ref: int32;
-  rx_ring_ref: int32;
-  event_channel: string;
-  feature_requests: features;
-} with sexp
 
 let _env_var = "NETCHANNEL_CONFIGURATION"
 
 let read_mac _ = return (Macaddr.make_local (fun _ -> Random.int 255))
 
 let write_frontend_configuration id t =
-  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (sexp_of_frontend_configuration t))) _env_var;
+  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (S.sexp_of_frontend_configuration t))) _env_var;
   return ()
 
 let connect id =
@@ -53,13 +32,17 @@ let connect id =
   return ()
 
 let write_backend id features =
-  let t = { backend_id = 0; backend = ""; features_available = features } in
-  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (sexp_of_backend_configuration t))) _env_var;
+  let frontend_id = 0 in
+  let backend_id = 0 in
+  let backend = "" in
+  let features_available = features in
+  let t = { S.frontend_id; backend_id; backend; features_available } in
+  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (S.sexp_of_backend_configuration t))) _env_var;
   return t
 
 let read_backend id =
   try
-    return (backend_configuration_of_sexp (Sexplib.Sexp.of_string (Sys.getenv _env_var)))
+    return (S.backend_configuration_of_sexp (Sexplib.Sexp.of_string (Sys.getenv _env_var)))
   with Not_found ->
     Printf.fprintf stderr "Failed to find %s in the process environment\n%!" _env_var;
     fail Not_found

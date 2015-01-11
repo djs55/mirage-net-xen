@@ -13,32 +13,11 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
+open Netchannel
 open Sexplib.Std
 open Lwt
 
 type 'a io = 'a Lwt.t
-
-type features = {
-  rx_copy: bool;
-  rx_flip: bool;
-  rx_notify: bool;
-  sg: bool;
-  gso_tcpv4: bool;
-  smart_poll: bool;
-} with sexp
-
-type backend_configuration = {
-  backend_id: int;
-  backend: string;
-  features_available: features;
-} with sexp
-
-type frontend_configuration = {
-  tx_ring_ref: int32;
-  rx_ring_ref: int32;
-  event_channel: string;
-  feature_requests: features;
-} with sexp
 
 let read_mac _ = return (Macaddr.make_local (fun _ -> Random.int 255))
 
@@ -64,7 +43,11 @@ let read_backend id =
   loop ()
 
 let write_backend id features =
-  let b = { backend_id = 0; backend =""; features_available = features } in
+  let frontend_id = 0 in
+  let backend_id = 0 in
+  let backend = "" in
+  let features_available = features in
+  let b = { S.frontend_id; backend_id; backend; features_available } in
   bc := Some b;
   Lwt_condition.signal bc_c ();
   return b

@@ -17,30 +17,9 @@ open Lwt
 open Sexplib.Std
 
 module Make(Xs: Xs_client_lwt.S) = struct
-
+  open S
+  
   type 'a io = 'a Lwt.t
-
-type features = {
-  rx_copy: bool;
-  rx_flip: bool;
-  rx_notify: bool;
-  sg: bool;
-  gso_tcpv4: bool;
-  smart_poll: bool;
-} with sexp
-
-type backend_configuration = {
-  backend_id: int;
-  backend: string;
-  features_available: features;
-} with sexp
-
-type frontend_configuration = {
-  tx_ring_ref: int32;
-  rx_ring_ref: int32;
-  event_channel: string;
-  feature_requests: features;
-} with sexp
 
   let read_int x =
     try
@@ -116,6 +95,10 @@ type frontend_configuration = {
     Xs.make ()
     >>= fun xsc ->
     Xs.(immediate xsc (fun h ->
+      read h (backend ^ "frontend-id")
+      >>= fun frontend_id ->
+      read_int frontend_id
+      >>= fun frontend_id ->
       let write_feature k v =
         write h (Printf.sprintf "%s/feature-%s" backend k) (if v then "1" else "0") in
       write_feature "sg" features.sg
@@ -138,7 +121,7 @@ type frontend_configuration = {
       >>= fun backend_id ->
       read h (frontend ^ "backend")
       >>= fun backend ->
-      return { backend; backend_id; features_available = features }
+      return { backend; frontend_id; backend_id; features_available = features }
     ))
 
   let read_backend id =
@@ -153,6 +136,10 @@ type frontend_configuration = {
       >>= fun backend_id ->
       read h (frontend ^ "backend")
       >>= fun backend ->
+      read h (backend ^ "frontend-id")
+      >>= fun frontend_id ->
+      read_int frontend_id
+      >>= fun frontend_id ->
       let read_feature k =
         Lwt.catch
           (fun () ->
@@ -173,7 +160,7 @@ type frontend_configuration = {
        read_feature "smart-poll"
        >>= fun smart_poll ->
        let features_available = { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll } in
-       return { backend; backend_id; features_available }
+       return { backend; frontend_id; backend_id; features_available }
    ))
 
   let description = "Configuration information will be shared via Xenstore keys"

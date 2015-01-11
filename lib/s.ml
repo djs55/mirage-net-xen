@@ -20,9 +20,6 @@ type id = [
 | `Server of int * int (* domid * device id *)
 ] with sexp
 
-module type CONFIGURATION = sig
-
-  type 'a io
 
 type features = {
   rx_copy: bool;
@@ -34,6 +31,7 @@ type features = {
 } with sexp
 
 type backend_configuration = {
+  frontend_id: int;
   backend_id: int;
   backend: string;
   features_available: features;
@@ -45,6 +43,10 @@ type frontend_configuration = {
   event_channel: string;
   feature_requests: features;
 } with sexp
+
+module type CONFIGURATION = sig
+
+  type 'a io
 
   val read_mac: id -> Macaddr.t io
 

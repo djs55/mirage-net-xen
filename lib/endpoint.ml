@@ -167,7 +167,7 @@ type transport = {
   rx_pages: Cstruct.t array;
   rx_gnt: M.grant;
   channel: E.channel;
-  features: C.features;
+  features: S.features;
   stats : stats;
 }
 
@@ -189,7 +189,7 @@ let backend_id t = t.t.backend_id
 let devices : (id, t) Hashtbl.t = Hashtbl.create 1
 
 let features = {
-  C.rx_copy = true;
+  S.rx_copy = true;
   rx_notify = true;
   sg = true;
   (* FIXME: not sure about these *)
@@ -210,23 +210,23 @@ let plug_inner id =
     | `Server (_, _) ->
       C.write_backend id features )
   >>= fun b ->
-  let backend_id = b.C.backend_id in
-  let backend = b.C.backend in
+  let backend_id = b.S.backend_id in
+  let backend = b.S.backend in
   C.read_mac id
   >>= fun mac ->
-  Printf.printf "Netfront.create: id=%s domid=%d mac=%s\n%!"
-    id' backend_id (Macaddr.to_string mac);
+  Printf.printf "Netchannel.create: id=%s mac=%s backend=%s\n%!"
+    id' (Macaddr.to_string mac) (Sexplib.Sexp.to_string (S.sexp_of_backend_configuration b));
 
   (* Allocate a transmit and receive ring, and event channel for them *)
-  E.listen b.C.backend_id
+  E.listen b.S.backend_id
   >>= fun (port, channel) ->
-  RX.create (sprintf "Netif.RX.%s" id', b.C.backend_id, channel)
+  RX.create (sprintf "Netif.RX.%s" id', b.S.backend_id, channel)
   >>= fun (rx_gnt, rx_ring) ->
-  TX.create (sprintf "Netif.TX.%s" id', b.C.backend_id, channel)
+  TX.create (sprintf "Netif.TX.%s" id', b.S.backend_id, channel)
   >>= fun (tx_gnt, tx_ring) ->
 
   let frontend = {
-    C.tx_ring_ref = M.int32_of_grant tx_gnt;
+    S.tx_ring_ref = M.int32_of_grant tx_gnt;
     rx_ring_ref = M.int32_of_grant rx_gnt;
     event_channel = E.string_of_port port;
     feature_requests = features;
