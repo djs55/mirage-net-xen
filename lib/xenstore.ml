@@ -18,7 +18,7 @@ open Sexplib.Std
 
 module Make(Xs: Xs_client_lwt.S) = struct
   open S
-  
+
   type 'a io = 'a Lwt.t
 
   let read_int x =
@@ -26,6 +26,12 @@ module Make(Xs: Xs_client_lwt.S) = struct
       return (int_of_string x)
     with _ ->
       fail (Failure (Printf.sprintf "Expected an integer: %s" x))
+
+  let read_int32 x =
+    try
+      return (Int32.of_string x)
+    with _ ->
+      fail (Failure (Printf.sprintf "Expected a 32-bit integer: %s" x))
 
   (* Return the path of the frontend *)
   let frontend = function
@@ -59,6 +65,55 @@ module Make(Xs: Xs_client_lwt.S) = struct
         (Sexplib.Sexp.to_string (S.sexp_of_id id)) (Macaddr.to_string m);
       return m
 
+  let read_features path =
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc
+      (fun h ->
+        let read_feature key =
+          Lwt.catch
+            (fun () ->
+              read h (Printf.sprintf "%s/feature-%s" path key)
+              >>= fun v ->
+              return (v = "1"))
+            (fun _ -> return false) in
+        read_feature "sg"
+        >>= fun sg ->
+        read_feature "gso-tcpv4"
+        >>= fun gso_tcpv4 ->
+        read_feature "rx-copy"
+        >>= fun rx_copy ->
+        read_feature "rx-flip"
+        >>= fun rx_flip ->
+        read_feature "rx-notify"
+        >>= fun rx_notify ->
+        read_feature "smart-poll"
+        >>= fun smart_poll ->
+        return { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll }
+    )
+  )
+
+  let write_features path features =
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc
+      (fun h ->
+        let write_feature k v =
+          write h (Printf.sprintf "%s/feature-%s" path k) (if v then "1" else "0") in
+        write_feature "sg" features.sg
+        >>= fun () ->
+        write_feature "gso-tcpv4" features.gso_tcpv4
+        >>= fun () ->
+        write_feature "rx-copy" features.rx_copy
+        >>= fun () ->
+        write_feature "rx-flip" features.rx_flip
+        >>= fun () ->
+        write_feature "rx-notify" features.rx_notify
+        >>= fun () ->
+        write_feature "smart-poll" features.smart_poll
+      )
+    )
+
   let write_frontend_configuration id (f: frontend_configuration) =
     frontend id
     >>= fun frontend ->
@@ -66,17 +121,46 @@ module Make(Xs: Xs_client_lwt.S) = struct
     >>= fun xsc ->
     Xs.(transaction xsc (fun h ->
       let wrfn k v = write h (frontend ^ k) v in
-      let write_feature k v =
-        wrfn ("feature-" ^ k) (if v then "1" else "0") in
       wrfn "tx-ring-ref" (Int32.to_string f.tx_ring_ref) >>= fun () ->
       wrfn "rx-ring-ref" (Int32.to_string f.rx_ring_ref) >>= fun () ->
       wrfn "event-channel" f.event_channel >>= fun () ->
-      write_feature "rx-copy" f.feature_requests.rx_copy >>= fun () ->
-      write_feature "rx-notify" f.feature_requests.rx_notify >>= fun () ->
-      write_feature "sg" f.feature_requests.sg >>= fun () ->
-      (* XXX: rx-flip, smart-poll, gso-tcpv4 *)
-      return ()
+      write_features frontend f.feature_requests
     ))
+
+  let read_frontend_configuration id =
+    frontend id
+    >>= fun frontend ->
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.wait xsc (fun h ->
+      Lwt.catch
+        (fun () ->
+          Xs.read h (frontend ^ "state")
+          >>= fun state ->
+          if state = "3" || state = "4"
+          then return ()
+          else raise Xs_protocol.Eagain
+        ) (function
+          | Xs_protocol.Enoent _ -> fail Xs_protocol.Eagain
+          | e -> fail e)
+    ) >>= fun () ->
+    Xs.(immediate xsc
+      (fun h ->
+        read h (frontend ^ "tx-ring-ref")
+        >>= fun tx_ring_ref ->
+        read_int32 tx_ring_ref
+        >>= fun tx_ring_ref ->
+        read h (frontend ^ "rx-ring-ref")
+        >>= fun rx_ring_ref ->
+        read_int32 rx_ring_ref
+        >>= fun rx_ring_ref ->
+        read h (frontend ^ "event-channel")
+        >>= fun event_channel ->
+        read_features frontend
+        >>= fun feature_requests ->
+        return { tx_ring_ref; rx_ring_ref; event_channel; feature_requests }
+      )
+    )
 
   let connect id =
     Xs.make ()
@@ -99,19 +183,7 @@ module Make(Xs: Xs_client_lwt.S) = struct
       >>= fun frontend_id ->
       read_int frontend_id
       >>= fun frontend_id ->
-      let write_feature k v =
-        write h (Printf.sprintf "%s/feature-%s" backend k) (if v then "1" else "0") in
-      write_feature "sg" features.sg
-      >>= fun () ->
-      write_feature "gso-tcpv4" features.gso_tcpv4
-      >>= fun () ->
-      write_feature "rx-copy" features.rx_copy
-      >>= fun () ->
-      write_feature "rx-flip" features.rx_flip
-      >>= fun () ->
-      write_feature "rx-notify" features.rx_notify
-      >>= fun () ->
-      write_feature "smart-poll" features.smart_poll
+      write_features backend features
       >>= fun () ->
       frontend id
       >>= fun frontend ->
@@ -140,27 +212,9 @@ module Make(Xs: Xs_client_lwt.S) = struct
       >>= fun frontend_id ->
       read_int frontend_id
       >>= fun frontend_id ->
-      let read_feature k =
-        Lwt.catch
-          (fun () ->
-            read h (Printf.sprintf "%s/feature-%s" backend k)
-            >>= fun v ->
-            return (v = "1"))
-          (fun _ -> return false) in
-       read_feature "sg"
-       >>= fun sg ->
-       read_feature "gso-tcpv4"
-       >>= fun gso_tcpv4 ->
-       read_feature "rx-copy"
-       >>= fun rx_copy ->
-       read_feature "rx-flip"
-       >>= fun rx_flip ->
-       read_feature "rx-notify"
-       >>= fun rx_notify ->
-       read_feature "smart-poll"
-       >>= fun smart_poll ->
-       let features_available = { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll } in
-       return { backend; frontend_id; backend_id; features_available }
+      read_features backend
+      >>= fun features_available ->
+      return { backend; frontend_id; backend_id; features_available }
    ))
 
   let description = "Configuration information will be shared via Xenstore keys"

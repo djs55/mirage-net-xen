@@ -131,9 +131,9 @@ module TX = struct
 
   let create (name, domid, channel) =
     allocate_ring ~domid
-    >>= fun (rx_gnt, buf) ->
+    >>= fun (tx_gnt, buf) ->
     let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
-    return (rx_gnt, ring)
+    return (tx_gnt, ring)
 end
 
 type id = [
@@ -154,7 +154,6 @@ type transport = {
   backend: string;
   mac: Macaddr.t;
   tx_ring: (TX.response,int) Ring.Front.t;
-  tx_gnt: M.grant;
   tx_mutex: Lwt_mutex.t; (* Held to avoid signalling between fragments *)
   mutable tx_next_id: int;
   rx_ring: (RX.response,int) Ring.Front.t;
@@ -165,7 +164,6 @@ type transport = {
   mutable rx_next_id: int;
   (* The granted page corresponding to each slot *)
   rx_pages: Cstruct.t array;
-  rx_gnt: M.grant;
   channel: E.channel;
   features: S.features;
   stats : stats;
@@ -198,31 +196,17 @@ let features = {
   smart_poll = false;
 }
 
-(* Given a VIF ID and backend domid, construct a record for it *)
-let plug_inner id =
-  let tx_mutex = Lwt_mutex.create () in
-
+let plug_client id =
   let id' = Sexplib.Sexp.to_string (S.sexp_of_id id) in
-
-  ( match id with
-    | `Client _ ->
-      C.read_backend id
-    | `Server (_, _) ->
-      C.write_backend id features )
+  C.read_backend id
   >>= fun b ->
-  let backend_id = b.S.backend_id in
-  let backend = b.S.backend in
   C.read_mac id
   >>= fun mac ->
-  Printf.printf "Netchannel.create: id=%s mac=%s backend=%s\n%!"
-    id' (Macaddr.to_string mac) (Sexplib.Sexp.to_string (S.sexp_of_backend_configuration b));
-
-  (* Allocate a transmit and receive ring, and event channel for them *)
   E.listen b.S.backend_id
   >>= fun (port, channel) ->
-  RX.create (sprintf "Netif.RX.%s" id', b.S.backend_id, channel)
+  RX.create (sprintf "Netchannel.RX.%s" id', b.S.backend_id, channel)
   >>= fun (rx_gnt, rx_ring) ->
-  TX.create (sprintf "Netif.TX.%s" id', b.S.backend_id, channel)
+  TX.create (sprintf "Netchannel.TX.%s" id', b.S.backend_id, channel)
   >>= fun (tx_gnt, tx_ring) ->
 
   let frontend = {
@@ -240,11 +224,31 @@ let plug_inner id =
   let rx_next_id = 0 in
   let rx_pages = Array.make (Ring.Front.nr_ents rx_ring) (Cstruct.create 0) in
   let stats = { rx_pkts=0l;rx_bytes=0L;tx_pkts=0l;tx_bytes=0L } in
-  (* Register callback activation *)
-  return { id; backend_id; tx_ring; tx_gnt; tx_mutex; tx_next_id;
-           rx_gnt; rx_ring; rx_shares; rx_pages; rx_next_id; stats;
-           channel; mac; backend; features;
-         }
+  let tx_mutex = Lwt_mutex.create () in
+  let backend_id = b.S.backend_id in
+  let backend = b.S.backend in
+  return { id; backend_id; tx_ring; tx_mutex; tx_next_id;
+    rx_ring; rx_shares; rx_pages; rx_next_id; stats;
+    channel; mac; backend; features;
+  }
+
+let plug_server id =
+  C.write_backend id features
+  >>= fun b ->
+  C.read_mac id
+  >>= fun mac ->
+  C.read_frontend_configuration id
+  >>= fun f ->
+  C.connect id
+  >>= fun () ->
+  failwith "unimplemented"
+
+let plug id =
+  Printf.printf "Netchannel.plug: id=%s\n%!"
+    (Sexplib.Sexp.to_string (S.sexp_of_id id));
+  match id with
+  | `Client _ -> plug_client id
+  | `Server _ -> plug_server id
 
 (** Set of active block devices *)
 let devices : (id, t) Hashtbl.t = Hashtbl.create 1
@@ -335,7 +339,7 @@ let connect id =
     let id' = Sexplib.Sexp.to_string (S.sexp_of_id id) in
     printf "Netif.connect %s\n%!" id';
     try_lwt
-      lwt t = plug_inner id in
+      lwt t = plug id in
       let l = Lwt_mutex.create () in
       let c = Lwt_condition.create () in
       (* packets are dropped until listen is called *)
@@ -479,7 +483,7 @@ let listen nf fn =
 let server ~domid ~devid = fail (Failure "not implemented")
 
 let resume (id,t) =
-  plug_inner id
+  plug id
   >>= fun transport ->
   let old_transport = t.t in
   t.t <- transport;

@@ -50,6 +50,10 @@ module type CONFIGURATION = sig
 
   val read_mac: id -> Macaddr.t io
 
+  val read_frontend_configuration: id -> frontend_configuration io
+  (** Waits for the frontend configuration to become available
+      and returns it. *)
+
   val write_frontend_configuration: id -> frontend_configuration -> unit io
 
   val connect: id -> unit io

@@ -27,6 +27,12 @@ let fc_c = Lwt_condition.create ()
 let bc = ref None
 let bc_c = Lwt_condition.create ()
 
+let read_frontend_configuration id =
+  let rec loop () = match !fc with
+  | None -> Lwt_condition.wait fc_c >>= fun () -> loop ()
+  | Some fc -> return fc in
+  loop ()
+
 let write_frontend_configuration id t =
   fc := Some t;
   Lwt_condition.signal fc_c ();

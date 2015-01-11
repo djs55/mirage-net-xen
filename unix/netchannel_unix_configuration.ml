@@ -13,7 +13,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
-open Netchannel 
+open Netchannel
 open Sexplib.Std
 open Lwt
 
@@ -26,6 +26,13 @@ let read_mac _ = return (Macaddr.make_local (fun _ -> Random.int 255))
 let write_frontend_configuration id t =
   Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (S.sexp_of_frontend_configuration t))) _env_var;
   return ()
+
+let read_frontend_configuration id =
+  try
+    return (S.frontend_configuration_of_sexp (Sexplib.Sexp.of_string (Sys.getenv _env_var)))
+  with Not_found ->
+    Printf.fprintf stderr "Failed to find %s in the process environment\n%!" _env_var;
+    fail Not_found
 
 let connect id =
   Printf.fprintf stderr "Connected\n%!";
