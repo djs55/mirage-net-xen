@@ -54,6 +54,8 @@ type frontend_configuration = {
 
   val read_backend: id -> backend_configuration io
 
+  val write_backend: id -> features -> backend_configuration io
+
   val description: string
   (** Human-readable description suitable for help text or
       a manpage *)

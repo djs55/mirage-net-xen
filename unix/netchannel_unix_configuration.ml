@@ -52,6 +52,11 @@ let connect id =
   Printf.fprintf stderr "Connected\n%!";
   return ()
 
+let write_backend id features =
+  let t = { backend_id = 0; backend = ""; features_available = features } in
+  Printf.fprintf stderr "%s=\"%s\"; export %s\n%!" _env_var (String.escaped (Sexplib.Sexp.to_string_hum (sexp_of_backend_configuration t))) _env_var;
+  return t
+
 let read_backend id =
   try
     return (backend_configuration_of_sexp (Sexplib.Sexp.of_string (Sys.getenv _env_var)))

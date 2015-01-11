@@ -63,4 +63,10 @@ let read_backend id =
   | Some bc -> return bc in
   loop ()
 
+let write_backend id features =
+  let b = { backend_id = 0; backend =""; features_available = features } in
+  bc := Some b;
+  Lwt_condition.signal bc_c ();
+  return b
+
 let description = "Configuration information will be shared via global bindings"

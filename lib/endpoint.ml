@@ -188,13 +188,27 @@ let backend_id t = t.t.backend_id
 
 let devices : (id, t) Hashtbl.t = Hashtbl.create 1
 
+let features = {
+  C.rx_copy = true;
+  rx_notify = true;
+  sg = true;
+  (* FIXME: not sure about these *)
+  rx_flip = false;
+  gso_tcpv4 = false;
+  smart_poll = false;
+}
+
 (* Given a VIF ID and backend domid, construct a record for it *)
 let plug_inner id =
   let tx_mutex = Lwt_mutex.create () in
 
   let id' = Sexplib.Sexp.to_string (S.sexp_of_id id) in
 
-  C.read_backend id
+  ( match id with
+    | `Client _ ->
+      C.read_backend id
+    | `Server (_, _) ->
+      C.write_backend id features )
   >>= fun b ->
   let backend_id = b.C.backend_id in
   let backend = b.C.backend in
@@ -211,15 +225,6 @@ let plug_inner id =
   TX.create (sprintf "Netif.TX.%s" id', b.C.backend_id, channel)
   >>= fun (tx_gnt, tx_ring) ->
 
-  let features = {
-    C.rx_copy = true;
-    rx_notify = true;
-    sg = true;
-    (* FIXME: not sure about these *)
-    rx_flip = false;
-    gso_tcpv4 = false;
-    smart_poll = false;
-  } in
   let frontend = {
     C.tx_ring_ref = M.int32_of_grant tx_gnt;
     rx_ring_ref = M.int32_of_grant rx_gnt;

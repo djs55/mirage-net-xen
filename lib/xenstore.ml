@@ -48,14 +48,29 @@ type frontend_configuration = {
     with _ ->
       fail (Failure (Printf.sprintf "Expected an integer: %s" x))
 
-  let node = function
-    | `Client devid -> Printf.sprintf "device/vif/%d/" devid
-    | `Server (domid, devid) -> Printf.sprintf "backend/vif/%d/%d" domid devid
-
-  let read_mac id =
+  (* Return the path of the frontend *)
+  let frontend = function
+  | `Client devid ->
+    return (Printf.sprintf "device/vif/%d/" devid)
+  | `Server (domid, devid) ->
     Xs.make ()
     >>= fun xsc ->
-    Xs.(immediate xsc (fun h -> read h (node id ^ "mac")))
+    Xs.(immediate xsc (fun h -> read h (Printf.sprintf "backend/vif/%d/%d/backend" domid devid)))
+
+  let backend = function
+  | `Client devid ->
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc (fun h -> read h (Printf.sprintf "device/vif/%d/backend" devid)))
+  | `Server (domid, devid) ->
+    return (Printf.sprintf "backend/vif/%d/%d" domid devid)
+
+  let read_mac id =
+    frontend id
+    >>= fun frontend ->
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc (fun h -> read h (frontend ^ "mac")))
     >|= Macaddr.of_string
     >>= function
     | Some x -> return x
@@ -66,10 +81,12 @@ type frontend_configuration = {
       return m
 
   let write_frontend_configuration id (f: frontend_configuration) =
+    frontend id
+    >>= fun frontend ->
     Xs.make ()
     >>= fun xsc ->
     Xs.(transaction xsc (fun h ->
-      let wrfn k v = write h (node id ^ k) v in
+      let wrfn k v = write h (frontend ^ k) v in
       let write_feature k v =
         wrfn ("feature-" ^ k) (if v then "1" else "0") in
       wrfn "tx-ring-ref" (Int32.to_string f.tx_ring_ref) >>= fun () ->
@@ -86,19 +103,55 @@ type frontend_configuration = {
     Xs.make ()
     >>= fun xsc ->
     Xs.(immediate xsc (fun h ->
-      write h (node id ^ "state") "4"
+      ( match id with
+        | `Client _ -> frontend id
+        | `Server (_, _) -> backend id )
+      >>= fun path ->
+      write h (path ^ "state") "4"
     ))
 
-  let read_backend id =
-    let backend = node id in
+  let write_backend id features =
+    backend id
+    >>= fun backend ->
     Xs.make ()
     >>= fun xsc ->
     Xs.(immediate xsc (fun h ->
-      read h (backend ^ "backend-id")
+      let write_feature k v =
+        write h (Printf.sprintf "%s/feature-%s" backend k) (if v then "1" else "0") in
+      write_feature "sg" features.sg
+      >>= fun () ->
+      write_feature "gso-tcpv4" features.gso_tcpv4
+      >>= fun () ->
+      write_feature "rx-copy" features.rx_copy
+      >>= fun () ->
+      write_feature "rx-flip" features.rx_flip
+      >>= fun () ->
+      write_feature "rx-notify" features.rx_notify
+      >>= fun () ->
+      write_feature "smart-poll" features.smart_poll
+      >>= fun () ->
+      frontend id
+      >>= fun frontend ->
+      read h (frontend ^ "backend-id")
       >>= fun backend_id ->
       read_int backend_id
       >>= fun backend_id ->
-      read h (backend ^ "backend")
+      read h (frontend ^ "backend")
+      >>= fun backend ->
+      return { backend; backend_id; features_available = features }
+    ))
+
+  let read_backend id =
+    frontend id
+    >>= fun frontend ->
+    Xs.make ()
+    >>= fun xsc ->
+    Xs.(immediate xsc (fun h ->
+      read h (frontend ^ "backend-id")
+      >>= fun backend_id ->
+      read_int backend_id
+      >>= fun backend_id ->
+      read h (frontend ^ "backend")
       >>= fun backend ->
       let read_feature k =
         Lwt.catch
