@@ -79,13 +79,6 @@ module RX = struct
   end
 
   type response = int * int * int
-
-  let create (name, domid, channel) =
-    allocate_ring ~domid
-    >>= fun (rx_gnt, buf) ->
-    let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
-    return (rx_gnt, ring)
-
 end
 
 module TX = struct
@@ -197,16 +190,20 @@ let features = {
 }
 
 let plug_client id =
-  let id' = Sexplib.Sexp.to_string (S.sexp_of_id id) in
+  let name = Sexplib.Sexp.to_string (S.sexp_of_id id) in
   C.read_backend id
   >>= fun b ->
   C.read_mac id
   >>= fun mac ->
   E.listen b.S.backend_id
   >>= fun (port, channel) ->
-  RX.create (sprintf "Netchannel.RX.%s" id', b.S.backend_id, channel)
-  >>= fun (rx_gnt, rx_ring) ->
-  TX.create (sprintf "Netchannel.TX.%s" id', b.S.backend_id, channel)
+
+  allocate_ring ~domid:b.S.backend_id
+  >>= fun (rx_gnt, buf) ->
+  let rx_ring = Ring.Front.init ~buf ~idx_size:RX.Proto_64.total_size
+    ~name:("Netchannel.RX." ^ name) channel string_of_int in
+
+  TX.create (sprintf "Netchannel.TX.%s" name, b.S.backend_id, channel)
   >>= fun (tx_gnt, tx_ring) ->
 
   let frontend = {
@@ -479,8 +476,6 @@ let listen nf fn =
   nf.receive_callback <- fn;
   let t, _ = Lwt.task () in
   t (* never return *)
-
-let server ~domid ~devid = fail (Failure "not implemented")
 
 let resume (id,t) =
   plug id
