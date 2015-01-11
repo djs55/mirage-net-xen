@@ -136,15 +136,25 @@ type stats = {
   mutable tx_pkts : int32;
 }
 
+type tx_ring = [
+| `Front of (TX.response,int) Ring.Front.t
+| `Back  of (TX.response,int) Ring.Back.t
+]
+
+type rx_ring = [
+| `Front of (RX.response,int) Ring.Front.t
+| `Back  of (RX.response,int) Ring.Back.t
+]
+
 type transport = {
   id: id;
   backend_id: int;
   backend: string;
   mac: Macaddr.t;
-  tx_ring: (TX.response,int) Ring.Front.t;
+  tx_ring: tx_ring;
   tx_mutex: Lwt_mutex.t; (* Held to avoid signalling between fragments *)
   mutable tx_next_id: int;
-  rx_ring: (RX.response,int) Ring.Front.t;
+  rx_ring: rx_ring;
   (* we share batches of pages with the backend and unshare
      when the last id is replied to. An entry in this array with
      index i means i is the last id using the share. *)
@@ -221,12 +231,15 @@ let plug_client id =
   let tx_mutex = Lwt_mutex.create () in
   let backend_id = b.S.backend_id in
   let backend = b.S.backend in
+  let rx_ring = `Front rx_ring in
+  let tx_ring = `Front tx_ring in
   return { id; backend_id; tx_ring; tx_mutex; tx_next_id;
     rx_ring; rx_shares; rx_pages; rx_next_id; stats;
     channel; mac; backend; features;
   }
 
 let plug_server id =
+  let name = Sexplib.Sexp.to_string (S.sexp_of_id id) in
   C.write_backend id features
   >>= fun b ->
   C.read_mac id
@@ -235,7 +248,38 @@ let plug_server id =
   >>= fun f ->
   C.connect id
   >>= fun () ->
-  failwith "unimplemented"
+  let port = match E.port_of_string f.S.event_channel with
+  | `Ok x -> x
+  | `Error x -> failwith x in
+  E.connect b.S.frontend_id port
+  >>= fun channel ->
+  let tx_gnt = M.grant_of_int32 f.S.tx_ring_ref in
+  M.map ~domid:b.S.backend_id ~grant:tx_gnt ~rw:true
+  >>= fun mapping ->
+  let buf = M.buf_of_mapping mapping in
+  (* Flip TX and RX around *)
+  let rx_ring = Ring.Back.init ~buf ~idx_size:RX.Proto_64.total_size
+    ~name:("Netchannel.RX." ^ name) channel string_of_int in
+  let rx_gnt = M.grant_of_int32 f.S.rx_ring_ref in
+  M.map ~domid:b.S.backend_id ~grant:rx_gnt ~rw:true
+  >>= fun mapping ->
+  let buf = M.buf_of_mapping mapping in
+  let tx_ring = Ring.Back.init ~buf ~idx_size:RX.Proto_64.total_size
+    ~name:("Netchannel.TX." ^ name) channel string_of_int in
+  let rx_shares = Array.make (Ring.Back.nr_ents rx_ring) None in
+  let tx_next_id = 0 in
+  let rx_next_id = 0 in
+  let rx_pages = Array.make (Ring.Back.nr_ents rx_ring) (Cstruct.create 0) in
+  let stats = { rx_pkts=0l;rx_bytes=0L;tx_pkts=0l;tx_bytes=0L } in
+  let tx_mutex = Lwt_mutex.create () in
+  let backend_id = b.S.backend_id in
+  let backend = b.S.backend in
+  let rx_ring = `Back rx_ring in
+  let tx_ring = `Back tx_ring in
+  return { id; backend_id; tx_ring; tx_mutex; tx_next_id;
+    rx_ring; rx_shares; rx_pages; rx_next_id; stats;
+    channel; mac; backend; features;
+  }
 
 let plug id =
   Printf.printf "Netchannel.plug: id=%s\n%!"
