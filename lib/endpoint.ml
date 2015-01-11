@@ -122,11 +122,6 @@ module TX = struct
     let _ = assert(total_size = 12)
   end
 
-  let create (name, domid, channel) =
-    allocate_ring ~domid
-    >>= fun (tx_gnt, buf) ->
-    let ring = Ring.Front.init ~buf ~idx_size:Proto_64.total_size ~name channel string_of_int in
-    return (tx_gnt, ring)
 end
 
 type id = [
@@ -203,8 +198,10 @@ let plug_client id =
   let rx_ring = Ring.Front.init ~buf ~idx_size:RX.Proto_64.total_size
     ~name:("Netchannel.RX." ^ name) channel string_of_int in
 
-  TX.create (sprintf "Netchannel.TX.%s" name, b.S.backend_id, channel)
-  >>= fun (tx_gnt, tx_ring) ->
+  allocate_ring ~domid:b.S.backend_id
+  >>= fun (tx_gnt, buf) ->
+  let tx_ring = Ring.Front.init ~buf ~idx_size:TX.Proto_64.total_size
+    ~name:("Netchannel.TX." ^ name) channel string_of_int in
 
   let frontend = {
     S.tx_ring_ref = M.int32_of_grant tx_gnt;
