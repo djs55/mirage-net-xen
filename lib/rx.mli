@@ -16,30 +16,28 @@
  *)
 open Sexplib.Std
 
-module Proto_64 : sig
-  module Request : sig
-    type t = {
-      id: int;
-      gref: int32;
-    } with sexp
+module Request : sig
+  type t = {
+    id: int;
+    gref: int32;
+  } with sexp
 
-    val write: t -> Cstruct.t -> unit
+  val write: t -> Cstruct.t -> unit
 
-    val read: Cstruct.t -> t
-  end
+  val read: Cstruct.t -> t
+end
 
-  module Response : sig
-    type t = {
-      id: int;
-      offset: int;
-      flags: Flag.t list;
-      status: int;
-    } with sexp
+module Response : sig
+  type t = {
+    id: int;
+    offset: int;
+    flags: Flag.t list;
+    status: int;
+  } with sexp
 
-    val read: Cstruct.t -> t ResultM.t
+  val read: Cstruct.t -> t ResultM.t
 
-    val write: t -> Cstruct.t -> unit
-  end
+  val write: t -> Cstruct.t -> unit
 end
 
 val total_size: int

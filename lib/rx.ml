@@ -16,67 +16,65 @@
  *)
 open Sexplib.Std
 
-module Proto_64 = struct
-  module Request = struct
-    type t = {
-      id: int;
-      gref: int32;
-    } with sexp
+module Request = struct
+  type t = {
+    id: int;
+    gref: int32;
+  } with sexp
 
-    cstruct req {
-      uint16_t       id;
-      uint16_t       _padding;
-      uint32_t       gref
-    } as little_endian
+  cstruct req {
+    uint16_t       id;
+    uint16_t       _padding;
+    uint32_t       gref
+  } as little_endian
 
-    let write t slot =
-      set_req_id slot t.id;
-      set_req_gref slot t.gref
+  let write t slot =
+    set_req_id slot t.id;
+    set_req_gref slot t.gref
 
-    let read slot =
-      let id = get_req_id slot in
-      let gref = get_req_gref slot in
-      { id; gref }
-  end
+  let read slot =
+    let id = get_req_id slot in
+    let gref = get_req_gref slot in
+    { id; gref }
+end
 
-  module Response = struct
-    type t = {
-      id: int;
-      offset: int;
-      flags: Flag.t list;
-      status: int;
-    } with sexp
+module Response = struct
+  type t = {
+    id: int;
+    offset: int;
+    flags: Flag.t list;
+    status: int;
+  } with sexp
 
-    cstruct resp {
-      uint16_t       id;
-      uint16_t       offset;
-      uint16_t       flags;
-      uint16_t       status
-    } as little_endian
+  cstruct resp {
+    uint16_t       id;
+    uint16_t       offset;
+    uint16_t       flags;
+    uint16_t       status
+  } as little_endian
 
-    let within_page name x =
-      if x < 0 || x > 4096
-      then `Error (Printf.sprintf "%s is corrupt: expected 0 <= %s <= 4096 but got %d" name name x)
-      else `Ok x
+  let within_page name x =
+    if x < 0 || x > 4096
+    then `Error (Printf.sprintf "%s is corrupt: expected 0 <= %s <= 4096 but got %d" name name x)
+    else `Ok x
 
-    let read slot =
-      let open ResultM in
-      let id = get_resp_id slot in
-      let offset = get_resp_offset slot in
-      within_page offset
-      >>= fun offset ->
-      let flags = get_resp_flags slot in
-      Flag.unmarshal flags
-      >>= fun flags ->
-      let status = get_resp_status slot in
-      return { id; offset; flags; status }
+  let read slot =
+    let open ResultM in
+    let id = get_resp_id slot in
+    let offset = get_resp_offset slot in
+    within_page offset
+    >>= fun offset ->
+    let flags = get_resp_flags slot in
+    Flag.unmarshal flags
+    >>= fun flags ->
+    let status = get_resp_status slot in
+    return { id; offset; flags; status }
 
-    let write t slot =
-      set_resp_id slot t.id;
-      set_resp_offset slot t.offset;
-      set_resp_flags slot (Flag.marshal t.flags);
-      set_resp_status slot t.status
-  end
+  let write t slot =
+    set_resp_id slot t.id;
+    set_resp_offset slot t.offset;
+    set_resp_flags slot (Flag.marshal t.flags);
+    set_resp_status slot t.status
 end
 
 let total_size = max Request.sizeof_req Response.sizeof_resp
