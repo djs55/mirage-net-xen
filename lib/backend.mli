@@ -27,4 +27,7 @@ module Make
   val make: S.backend_configuration -> S.frontend_configuration -> t Lwt.t
   (** [make backend frontend] connects a backend connecting to [frontend] *)
 
+
+  val stats: t -> Stats.t
+  (** [stats t] returns packet counter stats for [t] *)
 end

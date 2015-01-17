@@ -318,4 +318,5 @@ module Make
           Ring.Front.push t.transport.tx_ring
       )
 
+  let stats t = t.transport.stats
 end

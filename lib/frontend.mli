@@ -39,4 +39,7 @@ module Make
   (** [writev t buffers] transmits a single packet with contents
       taken by concatenating [buffers] *)
 
+  val stats: t -> Stats.t
+  (** [stats t] returns packet counter stats for [t] *)
+
 end

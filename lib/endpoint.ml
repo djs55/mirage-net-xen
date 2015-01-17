@@ -99,8 +99,19 @@ module Make(E: Evtchn.S.EVENTS
   }
 
   let resume t = fail (Failure "resume not implemented")
-  let reset_stats_counters t = failwith "reset_stats_counters"
-  let get_stats_counters t = failwith "get_stats_counters"
+  let reset_stats_counters t =
+    let stats = match t.implementation with
+    | Frontend f -> F.stats f
+    | Backend b -> B.stats b in
+    Stats.reset stats
+  let get_stats_counters t =
+    let stats = match t.implementation with
+    | Frontend f -> F.stats f
+    | Backend b -> B.stats b in
+    { rx_bytes = Int64.of_int stats.Stats.rx_bytes;
+      rx_pkts  = Int32.of_int stats.Stats.rx_pkts;
+      tx_bytes = Int64.of_int stats.Stats.tx_bytes;
+      tx_pkts  = Int32.of_int stats.Stats.tx_pkts }
   let mac t = failwith "mac"
   let listen t fn = fail (Failure "listen not implemented")
   let writev t bufs = fail (Failure "writev not implemented")

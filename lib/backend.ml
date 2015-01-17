@@ -89,4 +89,6 @@ module Make
       loop after in
     loop E.initial
 
+
+  let stats t = t.stats
 end
