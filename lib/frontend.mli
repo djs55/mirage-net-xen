@@ -23,7 +23,7 @@ module Make
   type t with sexp_of
   (** An active frontend connection *)
 
-  val make: S.backend_configuation -> t Lwt.t
+  val make: S.backend_configuration -> t Lwt.t
   (** Create a connected frontend from the given backend configuration. Packets
       will be dropped until [listen] is called. *)
 

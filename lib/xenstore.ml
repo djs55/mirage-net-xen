@@ -89,7 +89,7 @@ module Make(Xs: Xs_client_lwt.S) = struct
         >>= fun rx_notify ->
         read_feature "smart-poll"
         >>= fun smart_poll ->
-        return { sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll }
+        return { Features.sg; gso_tcpv4; rx_copy; rx_flip; rx_notify; smart_poll }
     )
   )
 
@@ -98,6 +98,7 @@ module Make(Xs: Xs_client_lwt.S) = struct
     >>= fun xsc ->
     Xs.(immediate xsc
       (fun h ->
+        let open Features in
         let write_feature k v =
           write h (Printf.sprintf "%s/feature-%s" path k) (if v then "1" else "0") in
         write_feature "sg" features.sg

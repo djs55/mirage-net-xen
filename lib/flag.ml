@@ -39,4 +39,4 @@ let unmarshal x =
    | 0, flags -> `Ok flags
   | x, _ -> `Error (Printf.sprintf "Unknown bit while parsing flags: %d" x)
 
-let marshal = List.fold_left (fun acc flag -> acc lor (List.mem_assoc flag flags)) 0
+let marshal = List.fold_left (fun acc flag -> acc lor (List.assoc flag flags)) 0

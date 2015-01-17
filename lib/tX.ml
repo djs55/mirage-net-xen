@@ -52,14 +52,14 @@ module Request = struct
     let open ResultM in
     let gref = get_req_gref slot in
     let offset = get_req_offset slot in
-    within_page "offset" offset
+    within_page "TX.Request.offset" offset
     >>= fun offset ->
     let flags = get_req_flags slot in
-    Flags.unmarshl flags
+    Flag.unmarshal flags
     >>= fun flags ->
     let id = get_req_id slot in
     let size = get_req_size slot in
-    within_page "size" size
+    within_page "TX.Request.size" size
     >>= fun size ->
     return { gref; offset; flags; id; size }
 end

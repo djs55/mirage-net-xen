@@ -20,28 +20,18 @@ type id = [
 | `Server of int * int (* domid * device id *)
 ] with sexp
 
-
-type features = {
-  rx_copy: bool;
-  rx_flip: bool;
-  rx_notify: bool;
-  sg: bool;
-  gso_tcpv4: bool;
-  smart_poll: bool;
-} with sexp
-
 type backend_configuration = {
   frontend_id: int;
   backend_id: int;
   backend: string;
-  features_available: features;
+  features_available: Features.t;
 } with sexp
 
 type frontend_configuration = {
   tx_ring_ref: int32;
   rx_ring_ref: int32;
   event_channel: string;
-  feature_requests: features;
+  feature_requests: Features.t;
 } with sexp
 
 module type CONFIGURATION = sig
@@ -60,7 +50,7 @@ module type CONFIGURATION = sig
 
   val read_backend: id -> backend_configuration io
 
-  val write_backend: id -> features -> backend_configuration io
+  val write_backend: id -> Features.t -> backend_configuration io
 
   val description: string
   (** Human-readable description suitable for help text or

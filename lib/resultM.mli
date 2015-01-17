@@ -20,6 +20,6 @@ type 'a t = [
   | `Error of string
 ]
 
-val (>>=): 'a t -> ('a t -> 'b) -> b
+val (>>=): 'a t -> ('a -> 'b t) -> 'b t
 
 val return: 'a -> 'a t

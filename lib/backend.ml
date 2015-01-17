@@ -16,6 +16,7 @@
  *)
 open Sexplib.Std
 open Lwt
+open Printf
 
 module Make
   (E: Evtchn.S.EVENTS with type 'a io = 'a Lwt.t)
@@ -25,11 +26,14 @@ module Make
 
   type t = {
     channel: E.channel;
-    rx_ring: (RX.response,int) Ring.Back.t;
-    tx_ring: (TX.response,int) Ring.Back.t;
+    rx_ring: (RX.Response.t,int) Ring.Back.t;
+    tx_ring: (TX.Response.t,int) Ring.Back.t;
     mutable receive_callback: Cstruct.t -> unit Lwt.t;
     stats: Stats.t;
   }
+
+  type t' = string with sexp_of
+  let sexp_of_t _ = sexp_of_t' "Netif.Backend.t"
 
   let make b f =
     let port = match E.port_of_string f.S.event_channel with
@@ -42,16 +46,21 @@ module Make
     >>= fun mapping ->
     let buf = M.buf_of_mapping mapping in
     (* Flip TX and RX around *)
-    let rx_ring = Ring.Back.init ~buf ~idx_size:RX.Proto_64.total_size
-      ~name:("Netchannel.RX." ^ name) channel string_of_int in
+    let rx_ring = Ring.Back.init ~buf ~idx_size:RX.total_size
+      ~name:("Netif.Backend.RX." ^ b.S.backend) channel string_of_int in
     let rx_gnt = M.grant_of_int32 f.S.rx_ring_ref in
     M.map ~domid:b.S.backend_id ~grant:rx_gnt ~rw:true
     >>= fun mapping ->
     let buf = M.buf_of_mapping mapping in
-    let tx_ring = Ring.Back.init ~buf ~idx_size:RX.Proto_64.total_size
-      ~name:("Netchannel.TX." ^ name) channel string_of_int in
-    let stats = Stats.zero () in
-    return { channel; rx_ring; tx_ring; stats }
+    let tx_ring = Ring.Back.init ~buf ~idx_size:RX.total_size
+      ~name:("Netif.Backend.TX." ^ b.S.backend) channel string_of_int in
+    let stats = Stats.create () in
+    let receive_callback _ = return_unit in
+    return { channel; rx_ring; tx_ring; stats; receive_callback }
+
+  let maybe_mapv rw grants = failwith "maybe_mapv"
+  let maybe_unmap mapping = failwith "maybe_unmap"
+  let grants_of_segments segs = failwith "grants_of_segments"
 
   (* check for incoming requests on the TX ring *)
   let read_thread (t: t) : unit Lwt.t =
@@ -59,19 +68,21 @@ module Make
       let q = ref [] in
       Ring.Back.ack_requests t.tx_ring
         (fun slot ->
-          let req = TX.parse_req slot in
-          (* update stats *)
-          q := req :: !q;
+          match TX.Request.read slot with
+          | `Error msg -> printf "Netif.Backend.read_read TX has unparseable request: %s" msg
+          | `Ok req ->
+            (* update stats *)
+            q := req :: !q
         );
       (* -- at this point the ring slots may be overwritten *)
-      let grants = grants_of_segments (Array.to_list segs) in
+      let grants = List.map (fun req -> req.TX.Request.gref) !q in
       maybe_mapv false grants
       >>= fun readonly_mapping ->
       let _ = (* perform everything else in a background thread *)
         failwith "XXX call listen with all the fragments";
         maybe_unmap readonly_mapping
         >>= fun () ->
-        let notify = Ring.Rpc.Back.push_responses_and_check_notify t.tx_ring in
+        let notify = Ring.Back.push_responses_and_check_notify t.tx_ring in
         if notify then E.send t.channel else return () in
       E.recv t.channel after
       >>= fun after ->

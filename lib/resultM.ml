@@ -20,7 +20,7 @@ type 'a t = [
   | `Error of string
 ]
 
-let (>>=) m f = match m with
+let (>>=) (m: 'a t) f = match m with
 | `Ok x -> f x
 | `Error msg -> `Error msg
 

@@ -21,7 +21,7 @@ module Make
   (E: Evtchn.S.EVENTS with type 'a io = 'a Lwt.t)
   (M: Memory.S.MEMORY) : sig
 
-  type t
+  type t with sexp_of
   (** A connected backend *)
 
   val make: S.backend_configuration -> S.frontend_configuration -> t Lwt.t

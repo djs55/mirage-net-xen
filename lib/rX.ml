@@ -62,7 +62,7 @@ module Response = struct
     let open ResultM in
     let id = get_resp_id slot in
     let offset = get_resp_offset slot in
-    within_page offset
+    within_page "RX.Response.offset" offset
     >>= fun offset ->
     let flags = get_resp_flags slot in
     Flag.unmarshal flags
