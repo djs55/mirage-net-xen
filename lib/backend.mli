@@ -27,6 +27,9 @@ module Make
   val make: S.backend_configuration -> S.frontend_configuration -> t Lwt.t
   (** [make backend frontend] connects a backend connecting to [frontend] *)
 
+  val listen: t -> (Cstruct.t -> unit Lwt.t) -> unit Lwt.t
+  (** [listen t callback] registers the [callback] function which will be called
+      on receipt of packets in future. Returns a thread which never terminates. *)
 
   val stats: t -> Stats.t
   (** [stats t] returns packet counter stats for [t] *)

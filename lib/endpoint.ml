@@ -116,7 +116,9 @@ module Make(E: Evtchn.S.EVENTS
       tx_bytes = Int64.of_int stats.Stats.tx_bytes;
       tx_pkts  = Int32.of_int stats.Stats.tx_pkts }
   let mac t = t.mac
-  let listen t fn = fail (Failure "listen not implemented")
+  let listen t fn = match t.implementation with
+    | Frontend f -> F.listen f fn
+    | Backend b -> B.listen b fn
   let writev t bufs = fail (Failure "writev not implemented")
   let write t buf = fail (Failure "write not implemented")
 

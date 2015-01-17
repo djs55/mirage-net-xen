@@ -89,6 +89,12 @@ module Make
       loop after in
     loop E.initial
 
+  let listen t fn =
+    (* packets received from this point on will go to [fn]. Historical
+    packets have not been stored: we don't want to buffer the network *)
+    t.receive_callback <- fn;
+    let task, _ = Lwt.task () in
+    task (* never return *)
 
   let stats t = t.stats
 end
