@@ -51,6 +51,7 @@ module Make(E: Evtchn.S.EVENTS
 
   type t = {
     id: id;
+    mac: Macaddr.t;
     implementation: implementation;
   } with sexp_of
 
@@ -70,13 +71,15 @@ module Make(E: Evtchn.S.EVENTS
       printf "Netif.Endpoint.(E)(M)(C).connect %s\n%!" id';
       Lwt.catch
         (fun () ->
+          C.read_mac id
+          >>= fun mac ->
           ( match id with
             | `Client _ ->
               fail (Failure "not implemented")
             | `Server (_, _) ->
               fail (Failure "not implemented")
           ) >>= fun implementation ->
-          let t = { id; implementation } in
+          let t = { id; implementation; mac } in
           Hashtbl.add devices id t;
           return (`Ok t)
         ) (fun exn ->
@@ -112,7 +115,7 @@ module Make(E: Evtchn.S.EVENTS
       rx_pkts  = Int32.of_int stats.Stats.rx_pkts;
       tx_bytes = Int64.of_int stats.Stats.tx_bytes;
       tx_pkts  = Int32.of_int stats.Stats.tx_pkts }
-  let mac t = failwith "mac"
+  let mac t = t.mac
   let listen t fn = fail (Failure "listen not implemented")
   let writev t bufs = fail (Failure "writev not implemented")
   let write t buf = fail (Failure "write not implemented")
