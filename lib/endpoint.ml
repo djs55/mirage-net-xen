@@ -120,6 +120,7 @@ module Make(E: Evtchn.S.EVENTS
     | Frontend f -> F.listen f fn
     | Backend b -> B.listen b fn
   let writev t bufs = fail (Failure "writev not implemented")
-  let write t buf = fail (Failure "write not implemented")
-
+  let write t buf = match t.implementation with
+    | Frontend f -> F.write f buf
+    | Backend b -> B.write b buf
 end

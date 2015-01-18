@@ -31,6 +31,10 @@ module Make
   (** [listen t callback] registers the [callback] function which will be called
       on receipt of packets in future. Returns a thread which never terminates. *)
 
+  val write: t -> Cstruct.t -> unit Lwt.t
+  (** [write t buffer] transmits a single packet with contents
+      [buffer]. *)
+
   val stats: t -> Stats.t
   (** [stats t] returns packet counter stats for [t] *)
 end
